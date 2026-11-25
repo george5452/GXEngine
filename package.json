@@ -1,0 +1,35 @@
+{
+  "name": "gxengine",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "npm run compile && electron .",
+    "compile": "esbuild runtime.js --bundle --format=iife --global-name=GX --outfile=runtime.bundle.js",
+    "build": "npm run compile && electron-builder --win --x64"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
+    "adm-zip": "^0.6.1",
+    "electron-builder": "^26.18.0",
+    "playcanvas": "^2.24.0"
+  },
+  "devDependencies": {
+    "electron": "^45.5.0",
+    "esbuild": "^0.28.2"
+  },
+  "build": {
+    "productName": "GXEngine",
+    "appId": "com.gxplayground.engine",
+    "asar": true,
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    }
+  }
+}

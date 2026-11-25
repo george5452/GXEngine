@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>GXEngine</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- MAIN MENU -->
+
+    <header id="menubar">
+
+        <div class="brand">
+            G<span>X</span>Engine
+        </div>
+
+        <details class="menu">
+            <summary>File</summary>
+            <div class="dropdown">
+                <button id="new">New Project</button>
+                <button id="open">Open Project</button>
+                <button id="save">Save Project</button>
+                <hr>
+                <button data-export="html">Export HTML</button>
+                <button data-export="zip">Export ZIP</button>
+                <button data-export="exe">Export Windows EXE</button>
+            </div>
+        </details>
+
+        <details class="menu">
+            <summary>Edit</summary>
+            <div class="dropdown">
+                <button id="undo">Undo</button>
+                <button id="redo">Redo</button>
+                <button id="duplicate">Duplicate</button>
+                <button id="delete">Delete</button>
+            </div>
+        </details>
+
+        <details class="menu">
+            <summary>Scene</summary>
+            <div class="dropdown">
+                <button data-add="box">Cube</button>
+                <button data-add="sphere">Sphere</button>
+                <button data-add="cylinder">Cylinder</button>
+                <button data-add="cone">Cone</button>
+                <button data-add="plane">Plane</button>
+                <button data-add="camera">Camera</button>
+                <button data-add="empty">Empty Entity</button>
+                <button data-add="capsule">Capsule</button>
+                <button data-add="player-first">First Person Player</button>
+                <button data-add="player-third">Third Person Player</button>
+            </div>
+        </details>
+
+        <div class="spacer"></div>
+
+        <span id="projectTitle">Untitled Project</span>
+        <button id="startTour">? Tour</button>
+
+    </header>
+
+
+    <!-- EDITOR TOOLBAR -->
+
+    <div id="toolbar">
+
+        <button data-tool="select" class="active">Select</button>
+        <button data-tool="move">Move</button>
+        <button data-tool="rotate">Rotate</button>
+        <button data-tool="scale">Scale</button>
+
+        <div class="separator"></div>
+
+        <button id="focus">Focus</button>
+        <button id="gridToggle" class="active">Grid</button>
+
+        <div class="spacer"></div>
+
+        <button id="play" class="play">▶ Play</button>
+        <button id="stop" disabled>■ Stop</button>
+
+        <div class="spacer"></div>
+
+        <select id="quality">
+            <option value="performance">Performance</option>
+            <option value="high">High Quality</option>
+            <option value="cinematic">Cinematic</option>
+        </select>
+
+        <button data-export="exe" class="primary">
+            Export Game
+        </button>
+
+    </div>
+
+
+    <!-- MAIN EDITOR -->
+
+    <div id="workspace">
+
+        <aside id="hierarchyPanel" class="panel">
+
+            <div class="panel-title">Hierarchy</div>
+
+            <div class="panel-body">
+
+                <input id="search" placeholder="Search entities...">
+
+                <div class="small-label">MAIN SCENE</div>
+
+                <div id="hierarchy"></div>
+
+                <hr>
+
+                <div class="small-label">CREATE ENTITY</div>
+
+                <div class="button-grid">
+                    <button data-add="box">Cube</button>
+                    <button data-add="sphere">Sphere</button>
+                    <button data-add="plane">Plane</button>
+                    <button data-add="camera">Camera</button>
+                    <button data-add="capsule">Capsule</button>
+                    <button data-add="cylinder">Cylinder</button>
+                </div>
+
+                <hr>
+
+                <div class="small-label">PLAYER CONTROLLERS</div>
+
+                <button data-add="player-first" class="player-card">
+                    <strong>First Person</strong>
+                    <small>Immersive camera controller</small>
+                </button>
+
+                <button data-add="player-third" class="player-card">
+                    <strong>Third Person</strong>
+                    <small>Orbit camera controller</small>
+                </button>
+
+            </div>
+
+        </aside>
+
+
+        <main id="viewport">
+
+            <canvas id="canvas"></canvas>
+
+            <div id="viewportToolbar">
+                <span>Perspective</span>
+                <span>Lit</span>
+            </div>
+
+            <div id="renderInfo">
+                Initializing renderer...
+            </div>
+
+            <div id="hud"></div>
+
+            <div id="viewportHelp">
+                Right drag: Orbit · Middle drag: Pan · Scroll: Zoom
+            </div>
+
+        </main>
+
+
+        <aside id="inspectorPanel" class="panel">
+
+            <div class="panel-title">Inspector</div>
+
+            <div class="panel-body">
+
+                <div id="inspector">
+                    Select an entity
+                </div>
+
+                <details class="component" open>
+                    <summary>Environment</summary>
+                    <label class="field">
+                        Sky Color
+                        <input type="color" id="sky">
+                    </label>
+
+                    <label class="field">
+                        Sun Intensity
+                        <input type="number" id="sun" min="0" max="10" step=".1">
+                    </label>
+
+                    <label class="field">
+                        Exposure
+                        <input type="number" id="exposure" min=".1" max="4" step=".1">
+                    </label>
+
+                </details>
+
+                <details class="component" open>
+
+                    <summary>Post Processing</summary>
+
+                    <label class="field">
+                        Ambient Occlusion
+                        <input type="checkbox" data-effect="ssao" checked>
+                    </label>
+
+                    <label class="field">
+                        HDR Bloom
+                        <input type="checkbox" data-effect="bloom" checked>
+                    </label>
+
+                    <label class="field">
+                        Temporal AA
+                        <input type="checkbox" data-effect="taa">
+                    </label>
+
+                    <label class="field">
+                        Volumetric Fog
+                        <input type="checkbox" data-effect="fog">
+                    </label>
+
+                    <label class="field">
+                        Depth of Field
+                        <input type="checkbox" data-effect="dof">
+                    </label>
+
+                    <label class="field">
+                        Vignette
+                        <input type="checkbox" data-effect="vignette">
+                    </label>
+
+                </details>
+
+                <details class="component">
+                    <summary>Project Settings</summary>
+
+                    <label class="field">
+                        Name
+                        <input id="projectName">
+                    </label>
+
+                </details>
+
+            </div>
+
+        </aside>
+
+    </div>
+
+
+    <!-- LOWER EDITOR DOCK -->
+
+    <section id="dock">
+
+        <div id="dockToolbar">
+
+            <button data-tab="assets" class="active">
+                Content Browser
+            </button>
+
+            <button data-tab="blueprint">
+                Blueprint
+            </button>
+
+            <button data-tab="console">
+                Console
+            </button>
+
+            <div class="spacer"></div>
+
+            <button id="toggleDock">▼</button>
+
+        </div>
+
+
+        <!-- CONTENT BROWSER -->
+
+        <div class="dock-page active" id="assets">
+
+            <div class="asset-toolbar">
+
+                <button id="importAsset">Import Model</button>
+                <button id="importTexture">Import Texture</button>
+
+                <span>Project / Assets</span>
+
+            </div>
+
+            <div id="assetList"></div>
+
+        </div>
+
+
+        <!-- BLUEPRINT EDITOR -->
+
+        <div class="dock-page" id="blueprint">
+
+            <div class="blueprint-toolbar">
+
+                <strong id="graphName">Blueprint</strong>
+
+                <div class="spacer"></div>
+
+                <select id="nodeType"></select>
+
+                <button id="addNode">Add Node</button>
+                <button id="disconnect">Disconnect</button>
+                <button id="deleteNode">Delete Node</button>
+
+            </div>
+
+            <div id="graphScroll">
+                <div id="graph">
+                    <svg id="wires"></svg>
+                </div>
+            </div>
+
+        </div>
+
+
+        <!-- CONSOLE -->
+
+        <div class="dock-page" id="console">
+
+            <button id="clearConsole">Clear</button>
+
+            <pre id="consoleOutput"></pre>
+
+        </div>
+
+    </section>
+
+
+    <!-- STATUS BAR -->
+
+    <footer>
+
+        <span id="status">GXEngine</span>
+
+        <div class="spacer"></div>
+
+        <span>GX Playground</span>
+
+    </footer>
+
+
+    <input id="modelFile" type="file" accept=".glb" hidden>
+    <input id="textureFile" type="file" accept="image/*" hidden>
+
+    <script src="runtime.bundle.js"></script>
+    <script src="starter.js"></script>
+    <script src="tools.js"></script>
+    <script src="editor.js"></script>
+    <script src="tour.js"></script>
+
+</body>
+
+</html>

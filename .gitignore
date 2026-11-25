@@ -1,0 +1,7 @@
+node_modules/
+dist/
+out/
+runtime.bundle.js
+*.exe
+*.dmg
+.env
