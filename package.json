@@ -1,7 +1,7 @@
 {
   "name": "gxengine",
   "version": "1.0.0",
-  "description": "",
+  "description": "Create without limits.",
   "main": "main.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -10,26 +10,31 @@
     "build": "npm run compile && electron-builder --win --x64"
   },
   "keywords": [],
-  "author": "",
+  "author": "GX Playground",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",
     "adm-zip": "^0.6.1",
-    "electron-builder": "^26.18.0",
     "playcanvas": "^2.24.0"
   },
   "devDependencies": {
     "electron": "^45.5.0",
+    "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2"
   },
   "build": {
     "productName": "GXEngine",
-    "appId": "com.gxplayground.engine",
+    "appId": "com.gxplayground.gxengine",
     "asar": true,
     "win": {
       "target": "nsis",
       "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
     }
   }
 }
