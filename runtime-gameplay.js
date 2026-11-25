@@ -1014,11 +1014,11 @@ export class Runtime extends BaseRuntime {
 
             this.createPlayer(player);
 
-            this.onMessage(
-
-                "Click viewport to control player"
-
-            );
+            if (this.editor) {
+                this.onMessage(
+                    "Click viewport to control player"
+                );
+            }
 
         }
 

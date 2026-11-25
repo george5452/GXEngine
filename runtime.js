@@ -306,6 +306,11 @@ export class Runtime extends GameplayRuntime {
 
                 colliderDescription.setSensor(true);
 
+                colliderDescription.setActiveCollisionTypes(
+                    RAPIER.ActiveCollisionTypes.DEFAULT |
+                    RAPIER.ActiveCollisionTypes.KINEMATIC_FIXED
+                );
+
             }
 
             const collider = this.physics.createCollider(
