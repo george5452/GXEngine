@@ -1,0 +1,1075 @@
+#[path = "launcher.rs"]
+mod launcher;
+
+#[path = "browser.rs"]
+mod browser;
+
+#[path = "gizmos.rs"]
+mod gizmos;
+
+#[path = "physics.rs"]
+mod physics;
+
+#[path = "player.rs"]
+mod player;
+
+#[path = "starter.rs"]
+mod starter;
+
+use std::path::PathBuf;
+use gizmos::{GizmoMode, GizmoDrag};
+use eframe::{egui, egui_wgpu};
+use egui_wgpu::CallbackTrait;
+use glam::{Vec3, Quat};
+use serde::{Deserialize, Serialize};
+use bytemuck::{Pod, Zeroable};
+use wgpu::util::DeviceExt;
+
+const MAX_OBJECTS: usize = 64;
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+enum Shape {
+    Cube,
+    Sphere,
+    Cylinder,
+    Capsule,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Object {
+    name: String,
+    shape: Shape,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+    color: [f32; 3],
+    metallic: f32,
+    roughness: f32,
+    emission: f32,
+    dynamic: bool,
+
+    #[serde(default)]
+    player_mode: u8,
+
+    #[serde(default = "default_walk_speed")]
+    walk_speed: f32,
+
+    #[serde(default = "default_sprint_speed")]
+    sprint_speed: f32,
+
+    #[serde(default = "default_jump_speed")]
+    jump_speed: f32,
+
+    #[serde(default = "default_camera_distance")]
+    camera_distance: f32,
+}
+
+fn default_walk_speed() -> f32 { 5.0 }
+fn default_sprint_speed() -> f32 { 9.0 }
+fn default_jump_speed() -> f32 { 8.0 }
+fn default_camera_distance() -> f32 { 6.0 }
+
+impl Object {
+    fn new(shape: Shape) -> Self {
+        Self {
+            name: format!("{:?}", shape),
+            shape,
+            position: [0.0, 1.5, 0.0],
+            rotation: [0.0; 3],
+            scale: [1.0; 3],
+            color: [0.65, 0.42, 0.85],
+            metallic: 0.1,
+            roughness: 0.35,
+            emission: 0.0,
+            dynamic: true,
+
+            player_mode: 0,
+            walk_speed: 5.0,
+            sprint_speed: 9.0,
+            jump_speed: 8.0,
+            camera_distance: 6.0,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Environment {
+    exposure: f32,
+    sun: f32,
+    gi: f32,
+    gi_distance: f32,
+    ao: f32,
+    fog: f32,
+    shadow_softness: f32,
+    reflections: f32,
+    glow: f32,
+    gravity: f32,
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Self {
+            exposure: 1.0,
+            sun: 3.0,
+            gi: 0.7,
+            gi_distance: 6.0,
+            ao: 1.0,
+            fog: 0.012,
+            shadow_softness: 12.0,
+            reflections: 0.8,
+            glow: 0.15,
+            gravity: 9.81,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Scene {
+    objects: Vec<Object>,
+    environment: Environment,
+}
+
+impl Default for Scene {
+    fn default() -> Self {
+        let mut cube = Object::new(Shape::Cube);
+        cube.position = [-1.2, 0.5, 0.0];
+
+        let mut sphere = Object::new(Shape::Sphere);
+        sphere.position = [1.2, 0.7, 0.0];
+        sphere.color = [0.8, 0.25, 0.12];
+        sphere.metallic = 0.65;
+
+        Self {
+            objects: vec![cube, sphere],
+            environment: Environment::default(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GPUObject {
+    position: [f32; 4],
+    scale: [f32; 4],
+    color: [f32; 4],
+    material: [f32; 4],
+    rotation: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Uniforms {
+    camera: [f32; 4],
+    forward: [f32; 4],
+    right: [f32; 4],
+    up: [f32; 4],
+    settings: [f32; 4],
+    effects: [f32; 4],
+    extra: [f32; 4],
+    objects: [GPUObject; MAX_OBJECTS],
+}
+
+struct GPUResources {
+    pipeline: wgpu::RenderPipeline,
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+struct ViewportCallback {
+    uniforms: Uniforms,
+}
+
+impl CallbackTrait for ViewportCallback {
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen: &egui_wgpu::ScreenDescriptor,
+        _encoder: &mut wgpu::CommandEncoder,
+        resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let gpu: &GPUResources = resources.get().unwrap();
+
+        queue.write_buffer(
+            &gpu.buffer,
+            0,
+            bytemuck::bytes_of(&self.uniforms),
+        );
+
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: egui::PaintCallbackInfo,
+        pass: &mut wgpu::RenderPass<'static>,
+        resources: &egui_wgpu::CallbackResources,
+    ) {
+        let gpu: &GPUResources = resources.get().unwrap();
+
+        pass.set_pipeline(&gpu.pipeline);
+        pass.set_bind_group(0, &gpu.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+fn initialize_gpu(cc: &eframe::CreationContext<'_>) {
+    let state = cc.wgpu_render_state.as_ref().unwrap();
+    let device = &state.device;
+
+    let buffer = device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("GX Scene Buffer"),
+            contents: bytemuck::bytes_of(
+                &Uniforms::zeroed()
+            ),
+            usage: wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::COPY_DST,
+        },
+    );
+
+    let layout = device.create_bind_group_layout(
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("GX Scene Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        },
+    );
+
+    let bind_group = device.create_bind_group(
+        &wgpu::BindGroupDescriptor {
+            label: Some("GX Scene Bind Group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        },
+    );
+
+    let shader = device.create_shader_module(
+        wgpu::ShaderModuleDescriptor {
+            label: Some("GX Cinematic"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("cinematic.wgsl").into(),
+            ),
+        },
+    );
+
+    let pipeline_layout = device.create_pipeline_layout(
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("GX Pipeline Layout"),
+            bind_group_layouts: &[&layout],
+            push_constant_ranges: &[],
+        },
+    );
+
+    let pipeline = device.create_render_pipeline(
+        &wgpu::RenderPipelineDescriptor {
+            label: Some("GX Cinematic Renderer"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: state.target_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        },
+    );
+
+    state.renderer.write().callback_resources.insert(
+        GPUResources {
+            pipeline,
+            buffer,
+            bind_group,
+        },
+    );
+
+    println!("[GXRenderer] Cinematic initialized");
+}
+
+struct GXEngine {
+    scene: Scene,
+    backup: Option<Scene>,
+    physics_world: Option<physics::GXPhysics>,
+    selected: Option<usize>,
+    camera: Vec3,
+    yaw: f32,
+    pitch: f32,
+    playing: bool,
+    mouse_locked: bool,
+    editor_camera: Vec3,
+    editor_yaw: f32,
+    editor_pitch: f32,
+    environment_selected: bool,
+    status: String,
+    path: String,
+    fps: f32,
+    launcher_open: bool,
+    project_name: String,
+    project_dir: PathBuf,
+    browser_dir: PathBuf,
+    template: usize,
+    starter_tab: usize,
+    starter_search: String,
+    browser_tab: usize,
+
+    gizmo_mode: GizmoMode,
+    gizmo_drag: Option<GizmoDrag>,
+}
+
+impl GXEngine {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        initialize_gpu(cc);
+
+        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+
+        Self {
+            scene: Scene::default(),
+            backup: None,
+            physics_world: None,
+            selected: Some(0),
+            camera: Vec3::new(5.0, 3.0, 7.0),
+            yaw: -2.52,
+            pitch: -0.28,
+            playing: false,
+            mouse_locked: false,
+            editor_camera: Vec3::ZERO,
+            editor_yaw: 0.0,
+            editor_pitch: 0.0,
+            environment_selected: false,
+            status: "GXEngine initialized".into(),
+            path: "scene.gxscene".into(),
+            fps: 60.0,
+
+        launcher_open: true,
+        project_name: "My Game".into(),
+        project_dir: PathBuf::from("projects"),
+        browser_dir: PathBuf::from("projects"),
+        template: 1,
+        starter_tab: 0,
+        starter_search: String::new(),
+        browser_tab: 0,
+
+        gizmo_mode: GizmoMode::Move,
+        gizmo_drag: None,
+        }
+    }
+
+    fn spawn(&mut self, shape: Shape) {
+        if self.scene.objects.len() >= MAX_OBJECTS {
+            self.status = "Scene object limit reached".into();
+            return;
+        }
+
+        self.scene.objects.push(Object::new(shape));
+
+        self.selected = Some(
+            self.scene.objects.len() - 1
+        );
+
+        self.environment_selected = false;
+    }
+
+    fn play(&mut self) {
+        self.backup = Some(self.scene.clone());
+        self.editor_camera = self.camera;
+        self.editor_yaw = self.yaw;
+        self.editor_pitch = self.pitch;
+
+        let mut world =
+            physics::GXPhysics::new(&self.scene);
+
+        if let Some(player) = self.scene.objects.iter()
+            .find(|o| o.player_mode != 0)
+        {
+            world.spawn_player(player.position);
+
+            self.yaw = -std::f32::consts::FRAC_PI_2;
+            self.pitch = 0.0;
+        }
+
+        self.physics_world = Some(world);
+        self.playing = true;
+        self.status = "Game running".into();
+    }
+
+    fn stop(&mut self) {
+        self.physics_world = None;
+        self.camera = self.editor_camera;
+        self.yaw = self.editor_yaw;
+        self.pitch = self.editor_pitch;
+
+        if let Some(scene) = self.backup.take() {
+            self.scene = scene;
+        }
+
+        self.playing = false;
+        self.selected = None;
+        self.status = "Edit mode".into();
+    }
+
+    fn save(&mut self) {
+        match serde_json::to_string_pretty(&self.scene) {
+            Ok(data) => {
+                match std::fs::write(&self.path, data) {
+                    Ok(_) => {
+                        self.status = "Scene saved".into();
+                    }
+                    Err(e) => self.status = e.to_string(),
+                }
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn load(&mut self) {
+        match std::fs::read_to_string(&self.path) {
+            Ok(data) => {
+                match serde_json::from_str::<Scene>(&data) {
+                    Ok(mut scene) => {
+                        scene.objects.truncate(MAX_OBJECTS);
+                        self.scene = scene;
+                        self.selected = None;
+                        self.status = "Scene loaded".into();
+                    }
+                    Err(e) => self.status = e.to_string(),
+                }
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn forward(&self) -> Vec3 {
+        Vec3::new(
+            self.yaw.cos() * self.pitch.cos(),
+            self.pitch.sin(),
+            self.yaw.sin() * self.pitch.cos(),
+        ).normalize()
+    }
+
+    fn uniforms(&self, aspect: f32) -> Uniforms {
+        let mut data = Uniforms::zeroed();
+
+        let forward = self.forward();
+        let right = forward.cross(Vec3::Y).normalize();
+        let up = right.cross(forward).normalize();
+
+        data.camera = self.camera.extend(aspect).to_array();
+        data.forward = forward.extend(0.0).to_array();
+        data.right = right.extend(0.0).to_array();
+        data.up = up.extend(0.0).to_array();
+
+        let env = &self.scene.environment;
+
+        data.settings = [
+            self.scene.objects.len().min(MAX_OBJECTS) as f32,
+            env.exposure,
+            env.sun,
+            env.gi,
+        ];
+
+        data.effects = [
+            env.ao,
+            env.fog,
+            env.shadow_softness,
+            env.reflections,
+        ];
+
+        data.extra = [
+            env.gi_distance,
+            env.glow,
+            self.selected.map(|i| i as f32).unwrap_or(-1.0),
+            0.0,
+        ];
+
+        for (i, object) in self.scene.objects
+            .iter()
+            .take(MAX_OBJECTS)
+            .enumerate()
+        {
+
+            if self.playing && object.player_mode == 1 {
+                data.objects[i].position = [
+                    0.0, -1000000.0, 0.0, 3.0
+                ];
+
+                data.objects[i].scale = [
+                    0.01, 0.01, 0.01, 0.0
+                ];
+
+                continue;
+            }
+            let shape = match object.shape {
+                Shape::Cube => 0.0,
+                Shape::Sphere => 1.0,
+                Shape::Cylinder => 2.0,
+                Shape::Capsule => 3.0,
+            };
+
+            let q = Quat::from_euler(
+                glam::EulerRot::XYZ,
+                object.rotation[0].to_radians(),
+                object.rotation[1].to_radians(),
+                object.rotation[2].to_radians(),
+            ).inverse();
+
+            data.objects[i] = GPUObject {
+                position: [
+                    object.position[0],
+                    object.position[1],
+                    object.position[2],
+                    shape,
+                ],
+                scale: [
+                    object.scale[0].max(0.05),
+                    object.scale[1].max(0.05),
+                    object.scale[2].max(0.05),
+                    0.0,
+                ],
+                color: [
+                    object.color[0],
+                    object.color[1],
+                    object.color[2],
+                    1.0,
+                ],
+                material: [
+                    object.metallic,
+                    object.roughness,
+                    object.emission,
+                    0.0,
+                ],
+                rotation: q.to_array(),
+            };
+        }
+
+        data
+    }
+
+    fn physics(&mut self, dt: f32) {
+        if !self.playing {
+            return;
+        }
+
+        if let Some(world) = &mut self.physics_world {
+            world.update(&mut self.scene, dt);
+        }
+    }
+}
+
+fn vector_editor(
+    ui: &mut egui::Ui,
+    name: &str,
+    value: &mut [f32; 3],
+) {
+    ui.label(name);
+
+    ui.horizontal(|ui| {
+        for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
+            ui.add(
+                egui::DragValue::new(&mut value[i])
+                    .prefix(format!("{} ", axis))
+                    .speed(0.05),
+            );
+        }
+    });
+}
+
+impl eframe::App for GXEngine {
+    fn update(
+        &mut self,
+        ctx: &egui::Context,
+        _frame: &mut eframe::Frame,
+    ) {
+        if self.launcher_open {
+            self.show_launcher(ctx);
+            return;
+        }
+        let dt = ctx.input(|i| i.stable_dt)
+            .clamp(0.001, 0.05);
+
+        self.fps = self.fps * 0.95 + (1.0 / dt) * 0.05;
+
+        self.player_update(ctx);
+        self.physics(dt);
+
+        egui::TopBottomPanel::top("toolbar")
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(
+                        egui::RichText::new("GXEngine")
+                            .color(
+                                egui::Color32::from_rgb(
+                                    185, 150, 255
+                                )
+                            )
+                    );
+
+                    ui.separator();
+
+                    if ui.button("New").clicked()
+                        && !self.playing
+                    {
+                        self.scene = Scene::default();
+                        self.selected = None;
+                    }
+
+                    if ui.button("Save").clicked()
+                        && !self.playing
+                    {
+                        self.save();
+                    }
+
+                    if ui.button("Open").clicked()
+                        && !self.playing
+                    {
+                        self.load();
+                    }
+
+                    if ui.button("Projects").clicked() && !self.playing {
+                        self.launcher_open = true;
+                    }
+
+                    ui.text_edit_singleline(&mut self.path);
+
+                    ui.separator();
+
+                    if self.playing {
+                        if ui.button("■ Stop").clicked() {
+                            self.unlock_mouse(ctx);
+                            self.stop();
+                        }
+                    } else if ui.button("▶ Play").clicked() {
+                        self.play();
+                    }
+
+                    ui.separator();
+                    ui.label("Cinematic");
+                    ui.separator();
+                    self.gizmo_toolbar(ui);
+                    ui.separator();
+                    self.player_toolbar(ui);
+                });
+            });
+
+        egui::SidePanel::left("hierarchy")
+            .default_width(190.0)
+            .show(ctx, |ui| {
+                ui.heading("Hierarchy");
+                ui.separator();
+
+                if ui.selectable_label(
+                    self.environment_selected,
+                    "Environment",
+                ).clicked() {
+                    self.environment_selected = true;
+                    self.selected = None;
+                }
+
+                ui.separator();
+
+                ui.add_enabled_ui(!self.playing, |ui| {
+                    ui.menu_button("+ Add Object", |ui| {
+                        if ui.button("Cube").clicked() {
+                            self.spawn(Shape::Cube);
+                            ui.close_menu();
+                        }
+
+                        if ui.button("Sphere").clicked() {
+                            self.spawn(Shape::Sphere);
+                            ui.close_menu();
+                        }
+
+                        if ui.button("Cylinder").clicked() {
+                            self.spawn(Shape::Cylinder);
+                            ui.close_menu();
+                        }
+                    });
+                });
+
+                for (i, object) in
+                    self.scene.objects.iter().enumerate()
+                {
+                    if ui.selectable_label(
+                        self.selected == Some(i),
+                        &object.name,
+                    ).clicked() {
+                        self.selected = Some(i);
+                        self.environment_selected = false;
+                    }
+                }
+
+                ui.separator();
+
+                if !self.playing {
+                    if let Some(index) = self.selected {
+                        if ui.button("Duplicate").clicked()
+                            && self.scene.objects.len() < MAX_OBJECTS
+                            && self.scene.objects[index].player_mode == 0
+                        {
+                            let mut obj =
+                                self.scene.objects[index].clone();
+
+                            obj.name.push_str(" Copy");
+                            obj.position[0] += 1.5;
+
+                            self.scene.objects.push(obj);
+                        }
+
+                        if ui.button("Delete").clicked() {
+                            self.scene.objects.remove(index);
+                            self.selected = None;
+                        }
+                    }
+                }
+            });
+
+        egui::SidePanel::right("inspector")
+            .default_width(260.0)
+            .show(ctx, |ui| {
+                ui.heading("Inspector");
+                ui.separator();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if self.environment_selected {
+                        let env = &mut self.scene.environment;
+
+                        ui.heading("Cinematic Environment");
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.exposure, 0.1..=3.0
+                            ).text("Exposure")
+                        );
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.sun, 0.0..=8.0
+                            ).text("Sun energy")
+                        );
+
+                        ui.separator();
+                        ui.heading("SDF Indirect Lighting");
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.gi, 0.0..=2.0
+                            ).text("GI strength")
+                        );
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.gi_distance, 1.0..=15.0
+                            ).text("GI distance")
+                        );
+
+                        ui.separator();
+                        ui.heading("Effects");
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.ao, 0.0..=2.0
+                            ).text("Ambient occlusion")
+                        );
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.fog, 0.0..=0.1
+                            ).text("Fog")
+                        );
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.shadow_softness,
+                                2.0..=40.0
+                            ).text("Shadow sharpness")
+                        );
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.reflections, 0.0..=1.0
+                            ).text("Reflections")
+                        );
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.glow, 0.0..=1.0
+                            ).text("Emissive glow")
+                        );
+
+                        ui.separator();
+
+                        ui.add(
+                            egui::Slider::new(
+                                &mut env.gravity, 0.0..=30.0
+                            ).text("Gravity")
+                        );
+
+                        if ui.button("Reset Environment").clicked() {
+                            *env = Environment::default();
+                        }
+                    } else if let Some(index) = self.selected {
+                        if let Some(obj) =
+                            self.scene.objects.get_mut(index)
+                        {
+                            ui.text_edit_singleline(&mut obj.name);
+
+                            ui.separator();
+                            ui.heading("Transform");
+
+                            vector_editor(
+                                ui, "Position", &mut obj.position
+                            );
+
+                            vector_editor(
+                                ui, "Rotation", &mut obj.rotation
+                            );
+
+                            vector_editor(
+                                ui, "Scale", &mut obj.scale
+                            );
+
+                            ui.separator();
+                            ui.heading("Material");
+
+                            ui.color_edit_button_rgb(&mut obj.color);
+
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut obj.metallic, 0.0..=1.0
+                                ).text("Metallic")
+                            );
+
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut obj.roughness, 0.02..=1.0
+                                ).text("Roughness")
+                            );
+
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut obj.emission, 0.0..=10.0
+                                ).text("Emission")
+                            );
+
+                            ui.separator();
+                            ui.heading("Physics");
+                            if obj.player_mode == 0 {
+                                ui.checkbox(&mut obj.dynamic, "Dynamic");
+                            } else {
+                                ui.separator();
+                                ui.heading("Character Controller");
+
+                                ui.selectable_value(
+                                    &mut obj.player_mode,
+                                    1,
+                                    "First Person"
+                                );
+
+                                ui.selectable_value(
+                                    &mut obj.player_mode,
+                                    2,
+                                    "Third Person"
+                                );
+
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut obj.walk_speed, 1.0..=20.0
+                                    ).text("Walk Speed")
+                                );
+
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut obj.sprint_speed, 1.0..=30.0
+                                    ).text("Sprint Speed")
+                                );
+
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut obj.jump_speed, 1.0..=20.0
+                                    ).text("Jump Speed")
+                                );
+
+                                if obj.player_mode == 2 {
+                                    ui.add(
+                                        egui::Slider::new(
+                                            &mut obj.camera_distance, 2.0..=15.0
+                                        ).text("Camera Distance")
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        ui.label("Select an object");
+                    }
+                });
+            });
+
+        egui::TopBottomPanel::bottom("status")
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&self.status);
+                    ui.separator();
+                    ui.label(format!("{:.0} FPS", self.fps));
+                    ui.separator();
+                    ui.label(format!(
+                        "{} objects",
+                        self.scene.objects.len()
+                    ));
+                    ui.separator();
+                    ui.label("GX Cinematic");
+                });
+            });
+            self.show_browser(ctx);
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let size = ui.available_size();
+
+            let (rect, response) = ui.allocate_exact_size(
+                size,
+                egui::Sense::click_and_drag(),
+            );
+
+            if !(self.playing && self.scene.objects.iter().any(|o| o.player_mode != 0))
+                && (response.hovered() || response.dragged())
+            {
+                let forward = self.forward();
+                let right = forward.cross(Vec3::Y).normalize();
+
+                ctx.input(|input| {
+                    let speed = if input.modifiers.shift {
+                        12.0
+                    } else {
+                        4.0
+                    } * dt;
+
+                    if input.key_down(egui::Key::W) {
+                        self.camera += forward * speed;
+                    }
+
+                    if input.key_down(egui::Key::S) {
+                        self.camera -= forward * speed;
+                    }
+
+                    if input.key_down(egui::Key::A) {
+                        self.camera -= right * speed;
+                    }
+
+                    if input.key_down(egui::Key::D) {
+                        self.camera += right * speed;
+                    }
+
+                    if input.key_down(egui::Key::E) {
+                        self.camera.y += speed;
+                    }
+
+                    if input.key_down(egui::Key::Q) {
+                        self.camera.y -= speed;
+                    }
+
+                    if input.pointer.secondary_down() {
+                        let delta = input.pointer.delta();
+
+                        self.yaw += delta.x * 0.004;
+
+                        self.pitch = (
+                            self.pitch - delta.y * 0.004
+                        ).clamp(-1.5, 1.5);
+                    }
+                });
+            }
+
+            self.player_mouse(ctx, &response);
+
+            let aspect = rect.width()
+                / rect.height().max(1.0);
+
+            let uniforms = self.uniforms(aspect);
+
+            ui.painter().add(
+                egui_wgpu::Callback::new_paint_callback(
+                    rect,
+                    ViewportCallback { uniforms },
+                )
+            );
+
+            self.draw_gizmos(ui, rect);
+
+            if self.playing {
+                let message = if self.mouse_locked {
+                    "ESC to release mouse"
+                } else {
+                    "Click viewport to control player"
+                };
+
+                ui.painter().text(
+                    rect.center_bottom() - egui::vec2(0.0, 25.0),
+                    egui::Align2::CENTER_CENTER,
+                    message,
+                    egui::FontId::proportional(16.0),
+                    egui::Color32::WHITE,
+                );
+
+                if self.mouse_locked {
+                    let center = rect.center();
+
+                    ui.painter().circle_filled(
+                        center,
+                        2.0,
+                        egui::Color32::WHITE,
+                    );
+                }
+            }
+            ui.painter().text(
+                rect.left_top() + egui::vec2(12.0, 12.0),
+                egui::Align2::LEFT_TOP,
+                "Perspective | Cinematic",
+                egui::FontId::proportional(14.0),
+                egui::Color32::WHITE,
+            );
+        });
+
+        ctx.request_repaint();
+    }
+}
+
+pub fn run() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        viewport: egui::ViewportBuilder::default()
+            .with_title("GXEngine")
+            .with_inner_size([1440.0, 850.0]),
+        ..Default::default()
+        };
+
+    eframe::run_native(
+        "GXEngine",
+        options,
+        Box::new(|cc| {
+            Ok(Box::new(GXEngine::new(cc)))
+        }),
+    )
+}
