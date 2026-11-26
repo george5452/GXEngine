@@ -197,7 +197,7 @@ impl GXEngine {
 
         if self.mouse_locked {
             let delta = ctx.input(|i| {
-                i.pointer.motion()
+                i.pointer.motion().unwrap_or(egui::Vec2::ZERO)
             });
 
             self.yaw += delta.x * 0.0025;
