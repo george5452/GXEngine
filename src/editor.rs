@@ -16,13 +16,28 @@ mod player;
 #[path = "starter.rs"]
 mod starter;
 
-use std::path::PathBuf;
-use gizmos::{GizmoMode, GizmoDrag};
+#[path = "mesh.rs"]
+mod mesh;
+
+#[path = "graphics.rs"]
+mod graphics;
+
+#[path = "mesh_light.rs"]
+mod mesh_light;
+
+#[path = "lighting.rs"]
+mod lighting;
+
+#[path = "blueprint.rs"]
+mod blueprint;
+
+use bytemuck::{Pod, Zeroable};
 use eframe::{egui, egui_wgpu};
 use egui_wgpu::CallbackTrait;
-use glam::{Vec3, Quat};
+use gizmos::{GizmoDrag, GizmoMode};
+use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
-use bytemuck::{Pod, Zeroable};
+use std::path::PathBuf;
 use wgpu::util::DeviceExt;
 
 const MAX_OBJECTS: usize = 64;
@@ -33,6 +48,7 @@ enum Shape {
     Sphere,
     Cylinder,
     Capsule,
+    Mesh,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -47,6 +63,18 @@ struct Object {
     roughness: f32,
     emission: f32,
     dynamic: bool,
+
+    #[serde(default)]
+    light_only: bool,
+
+    #[serde(default)]
+    light: lighting::Light,
+
+    #[serde(default)]
+    blueprint: blueprint::Blueprint,
+
+    #[serde(default)]
+    meshes: Vec<mesh::MeshData>,
 
     #[serde(default)]
     player_mode: u8,
@@ -64,14 +92,25 @@ struct Object {
     camera_distance: f32,
 }
 
-fn default_walk_speed() -> f32 { 5.0 }
-fn default_sprint_speed() -> f32 { 9.0 }
-fn default_jump_speed() -> f32 { 8.0 }
-fn default_camera_distance() -> f32 { 6.0 }
+fn default_walk_speed() -> f32 {
+    5.0
+}
+fn default_sprint_speed() -> f32 {
+    9.0
+}
+fn default_jump_speed() -> f32 {
+    8.0
+}
+fn default_camera_distance() -> f32 {
+    6.0
+}
 
 impl Object {
     fn new(shape: Shape) -> Self {
         Self {
+            light_only: false,
+            light: lighting::Light::default(),
+            blueprint: blueprint::Blueprint::default(),
             name: format!("{:?}", shape),
             shape,
             position: [0.0, 1.5, 0.0],
@@ -82,6 +121,7 @@ impl Object {
             roughness: 0.35,
             emission: 0.0,
             dynamic: true,
+            meshes: Vec::new(),
 
             player_mode: 0,
             walk_speed: 5.0,
@@ -154,6 +194,8 @@ struct GPUObject {
     color: [f32; 4],
     material: [f32; 4],
     rotation: [f32; 4],
+    light_color: [f32; 4],
+    light_settings: [f32; 4],
 }
 
 #[repr(C)]
@@ -170,12 +212,15 @@ struct Uniforms {
 }
 
 struct GPUResources {
+    lighting: mesh_light::MeshLighting,
+    mesh: mesh::MeshGPU,
     pipeline: wgpu::RenderPipeline,
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
 
 struct ViewportCallback {
+    vertices: Vec<mesh::MeshVertex>,
     uniforms: Uniforms,
 }
 
@@ -188,13 +233,12 @@ impl CallbackTrait for ViewportCallback {
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let gpu: &GPUResources = resources.get().unwrap();
+        let gpu: &mut GPUResources = resources.get_mut().unwrap();
 
-        queue.write_buffer(
-            &gpu.buffer,
-            0,
-            bytemuck::bytes_of(&self.uniforms),
-        );
+        gpu.mesh.upload(_device, &self.vertices);
+        gpu.lighting.upload(queue, &self.vertices);
+
+        queue.write_buffer(&gpu.buffer, 0, bytemuck::bytes_of(&self.uniforms));
 
         Vec::new()
     }
@@ -210,6 +254,7 @@ impl CallbackTrait for ViewportCallback {
         pass.set_pipeline(&gpu.pipeline);
         pass.set_bind_group(0, &gpu.bind_group, &[]);
         pass.draw(0..3, 0..1);
+        gpu.mesh.draw(pass, &gpu.bind_group);
     }
 }
 
@@ -217,101 +262,133 @@ fn initialize_gpu(cc: &eframe::CreationContext<'_>) {
     let state = cc.wgpu_render_state.as_ref().unwrap();
     let device = &state.device;
 
-    let buffer = device.create_buffer_init(
-        &wgpu::util::BufferInitDescriptor {
-            label: Some("GX Scene Buffer"),
-            contents: bytemuck::bytes_of(
-                &Uniforms::zeroed()
-            ),
-            usage: wgpu::BufferUsages::UNIFORM
-                | wgpu::BufferUsages::COPY_DST,
-        },
-    );
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("GX Scene Buffer"),
+        contents: bytemuck::bytes_of(&Uniforms::zeroed()),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
 
-    let layout = device.create_bind_group_layout(
-        &wgpu::BindGroupLayoutDescriptor {
-            label: Some("GX Scene Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
+    let lighting = mesh_light::MeshLighting::new(device);
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("GX Scene Layout"),
+
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
-                count: None,
-            }],
-        },
-    );
 
-    let bind_group = device.create_bind_group(
-        &wgpu::BindGroupDescriptor {
-            label: Some("GX Scene Bind Group"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry {
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+
+                visibility: wgpu::ShaderStages::FRAGMENT,
+
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+
+                count: None,
+            },
+        ],
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("GX Scene Bind Group"),
+
+        layout: &layout,
+
+        entries: &[
+            wgpu::BindGroupEntry {
                 binding: 0,
                 resource: buffer.as_entire_binding(),
-            }],
-        },
-    );
-
-    let shader = device.create_shader_module(
-        wgpu::ShaderModuleDescriptor {
-            label: Some("GX Cinematic"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("cinematic.wgsl").into(),
-            ),
-        },
-    );
-
-    let pipeline_layout = device.create_pipeline_layout(
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("GX Pipeline Layout"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
-        },
-    );
-
-    let pipeline = device.create_render_pipeline(
-        &wgpu::RenderPipelineDescriptor {
-            label: Some("GX Cinematic Renderer"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: state.target_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        },
-    );
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: lighting.buffer.as_entire_binding(),
+            },
+        ],
+    });
 
-    state.renderer.write().callback_resources.insert(
-        GPUResources {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("GX Cinematic"),
+        source: wgpu::ShaderSource::Wgsl(
+            format!(
+                "{}\n{}",
+                include_str!("cinematic.wgsl"),
+                include_str!("mesh_light.wgsl"),
+            )
+            .into(),
+        ),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("GX Pipeline Layout"),
+        bind_group_layouts: &[&layout],
+        push_constant_ranges: &[],
+    });
+
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("GX Cinematic Renderer"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: state.target_format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: Default::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    });
+
+    let mesh = mesh::MeshGPU::new(device, &layout, state.target_format);
+
+    state
+        .renderer
+        .write()
+        .callback_resources
+        .insert(GPUResources {
+            lighting,
+            mesh,
             pipeline,
             buffer,
             bind_group,
-        },
-    );
+        });
 
     println!("[GXRenderer] Cinematic initialized");
 }
 
 struct GXEngine {
+    blueprint_runtime: blueprint::BlueprintRuntime,
     scene: Scene,
     backup: Option<Scene>,
     physics_world: Option<physics::GXPhysics>,
@@ -348,6 +425,7 @@ impl GXEngine {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
         Self {
+            blueprint_runtime: blueprint::BlueprintRuntime::default(),
             scene: Scene::default(),
             backup: None,
             physics_world: None,
@@ -365,17 +443,17 @@ impl GXEngine {
             path: "scene.gxscene".into(),
             fps: 60.0,
 
-        launcher_open: true,
-        project_name: "My Game".into(),
-        project_dir: PathBuf::from("projects"),
-        browser_dir: PathBuf::from("projects"),
-        template: 1,
-        starter_tab: 0,
-        starter_search: String::new(),
-        browser_tab: 0,
+            launcher_open: true,
+            project_name: "My Game".into(),
+            project_dir: PathBuf::from("projects"),
+            browser_dir: PathBuf::from("projects"),
+            template: 1,
+            starter_tab: 0,
+            starter_search: String::new(),
+            browser_tab: 0,
 
-        gizmo_mode: GizmoMode::Move,
-        gizmo_drag: None,
+            gizmo_mode: GizmoMode::Move,
+            gizmo_drag: None,
         }
     }
 
@@ -387,9 +465,7 @@ impl GXEngine {
 
         self.scene.objects.push(Object::new(shape));
 
-        self.selected = Some(
-            self.scene.objects.len() - 1
-        );
+        self.selected = Some(self.scene.objects.len() - 1);
 
         self.environment_selected = false;
     }
@@ -400,12 +476,9 @@ impl GXEngine {
         self.editor_yaw = self.yaw;
         self.editor_pitch = self.pitch;
 
-        let mut world =
-            physics::GXPhysics::new(&self.scene);
+        let mut world = physics::GXPhysics::new(&self.scene);
 
-        if let Some(player) = self.scene.objects.iter()
-            .find(|o| o.player_mode != 0)
-        {
+        if let Some(player) = self.scene.objects.iter().find(|o| o.player_mode != 0) {
             world.spawn_player(player.position);
 
             self.yaw = -std::f32::consts::FRAC_PI_2;
@@ -434,31 +507,27 @@ impl GXEngine {
 
     fn save(&mut self) {
         match serde_json::to_string_pretty(&self.scene) {
-            Ok(data) => {
-                match std::fs::write(&self.path, data) {
-                    Ok(_) => {
-                        self.status = "Scene saved".into();
-                    }
-                    Err(e) => self.status = e.to_string(),
+            Ok(data) => match std::fs::write(&self.path, data) {
+                Ok(_) => {
+                    self.status = "Scene saved".into();
                 }
-            }
+                Err(e) => self.status = e.to_string(),
+            },
             Err(e) => self.status = e.to_string(),
         }
     }
 
     fn load(&mut self) {
         match std::fs::read_to_string(&self.path) {
-            Ok(data) => {
-                match serde_json::from_str::<Scene>(&data) {
-                    Ok(mut scene) => {
-                        scene.objects.truncate(MAX_OBJECTS);
-                        self.scene = scene;
-                        self.selected = None;
-                        self.status = "Scene loaded".into();
-                    }
-                    Err(e) => self.status = e.to_string(),
+            Ok(data) => match serde_json::from_str::<Scene>(&data) {
+                Ok(mut scene) => {
+                    scene.objects.truncate(MAX_OBJECTS);
+                    self.scene = scene;
+                    self.selected = None;
+                    self.status = "Scene loaded".into();
                 }
-            }
+                Err(e) => self.status = e.to_string(),
+            },
             Err(e) => self.status = e.to_string(),
         }
     }
@@ -468,7 +537,8 @@ impl GXEngine {
             self.yaw.cos() * self.pitch.cos(),
             self.pitch.sin(),
             self.yaw.sin() * self.pitch.cos(),
-        ).normalize()
+        )
+        .normalize()
     }
 
     fn uniforms(&self, aspect: f32) -> Uniforms {
@@ -492,12 +562,7 @@ impl GXEngine {
             env.gi,
         ];
 
-        data.effects = [
-            env.ao,
-            env.fog,
-            env.shadow_softness,
-            env.reflections,
-        ];
+        data.effects = [env.ao, env.fog, env.shadow_softness, env.reflections];
 
         data.extra = [
             env.gi_distance,
@@ -506,28 +571,24 @@ impl GXEngine {
             0.0,
         ];
 
-        for (i, object) in self.scene.objects
-            .iter()
-            .take(MAX_OBJECTS)
-            .enumerate()
-        {
-
+        for (i, object) in self.scene.objects.iter().take(MAX_OBJECTS).enumerate() {
             if self.playing && object.player_mode == 1 {
-                data.objects[i].position = [
-                    0.0, -1000000.0, 0.0, 3.0
-                ];
+                data.objects[i].position = [0.0, -1000000.0, 0.0, 3.0];
 
-                data.objects[i].scale = [
-                    0.01, 0.01, 0.01, 0.0
-                ];
+                data.objects[i].scale = [0.01, 0.01, 0.01, 0.0];
 
                 continue;
             }
-            let shape = match object.shape {
-                Shape::Cube => 0.0,
-                Shape::Sphere => 1.0,
-                Shape::Cylinder => 2.0,
-                Shape::Capsule => 3.0,
+            let shape = if object.light_only {
+                5.0
+            } else {
+                match object.shape {
+                    Shape::Cube => 0.0,
+                    Shape::Sphere => 1.0,
+                    Shape::Cylinder => 2.0,
+                    Shape::Capsule => 3.0,
+                    Shape::Mesh => 4.0,
+                }
             };
 
             let q = Quat::from_euler(
@@ -535,7 +596,8 @@ impl GXEngine {
                 object.rotation[0].to_radians(),
                 object.rotation[1].to_radians(),
                 object.rotation[2].to_radians(),
-            ).inverse();
+            )
+            .inverse();
 
             data.objects[i] = GPUObject {
                 position: [
@@ -550,19 +612,22 @@ impl GXEngine {
                     object.scale[2].max(0.05),
                     0.0,
                 ],
-                color: [
-                    object.color[0],
-                    object.color[1],
-                    object.color[2],
-                    1.0,
+                color: [object.color[0], object.color[1], object.color[2], 1.0],
+                material: [object.metallic, object.roughness, object.emission, 0.0],
+                rotation: q.to_array(),
+                light_color: [
+                    object.light.color[0],
+                    object.light.color[1],
+                    object.light.color[2],
+                    object.light.energy,
                 ],
-                material: [
-                    object.metallic,
-                    object.roughness,
-                    object.emission,
+
+                light_settings: [
+                    if object.light.enabled { 1.0 } else { 0.0 },
+                    object.light.kind as f32,
+                    object.light.range,
                     0.0,
                 ],
-                rotation: q.to_array(),
             };
         }
 
@@ -580,11 +645,7 @@ impl GXEngine {
     }
 }
 
-fn vector_editor(
-    ui: &mut egui::Ui,
-    name: &str,
-    value: &mut [f32; 3],
-) {
+fn vector_editor(ui: &mut egui::Ui, name: &str, value: &mut [f32; 3]) {
     ui.label(name);
 
     ui.horizontal(|ui| {
@@ -599,81 +660,83 @@ fn vector_editor(
 }
 
 impl eframe::App for GXEngine {
-    fn update(
-        &mut self,
-        ctx: &egui::Context,
-        _frame: &mut eframe::Frame,
-    ) {
+    fn on_exit(&mut self) {
+        if !self.launcher_open {
+            if self.playing {
+                self.stop();
+            }
+
+            self.save();
+            self.save_graphics_settings();
+        }
+    }
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.launcher_open {
             self.show_launcher(ctx);
             return;
         }
-        let dt = ctx.input(|i| i.stable_dt)
-            .clamp(0.001, 0.05);
+        let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
 
         self.fps = self.fps * 0.95 + (1.0 / dt) * 0.05;
 
-        self.player_update(ctx);
         self.physics(dt);
+        self.player_update(ctx);
+        self.blueprint_update(ctx, dt);
 
-        egui::TopBottomPanel::top("toolbar")
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading(
-                        egui::RichText::new("GXEngine")
-                            .color(
-                                egui::Color32::from_rgb(
-                                    185, 150, 255
-                                )
-                            )
-                    );
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading(
+                    egui::RichText::new("GXEngine").color(egui::Color32::from_rgb(185, 150, 255)),
+                );
 
-                    ui.separator();
+                ui.separator();
 
-                    if ui.button("New").clicked()
-                        && !self.playing
-                    {
-                        self.scene = Scene::default();
-                        self.selected = None;
+                if ui.button("New").clicked() && !self.playing {
+                    self.scene = Scene::default();
+                    self.selected = None;
+                }
+
+                if ui.button("Save").clicked() && !self.playing {
+                    self.save();
+                }
+
+                if ui.button("Open").clicked() && !self.playing {
+                    self.load();
+                }
+
+                if ui.button("Projects").clicked() && !self.playing {
+                    self.save();
+                    self.save_graphics_settings();
+                    self.launcher_open = true;
+                }
+
+                if ui.button("Blueprint").clicked() {
+                    self.blueprint_runtime.open = true;
+                }
+
+                ui.text_edit_singleline(&mut self.path);
+
+                ui.separator();
+
+                if self.playing {
+                    if ui.button("■ Stop").clicked() {
+                        self.unlock_mouse(ctx);
+                        self.stop();
                     }
+                } else if ui.button("▶ Play").clicked() {
+                    self.play();
+                }
 
-                    if ui.button("Save").clicked()
-                        && !self.playing
-                    {
-                        self.save();
-                    }
-
-                    if ui.button("Open").clicked()
-                        && !self.playing
-                    {
-                        self.load();
-                    }
-
-                    if ui.button("Projects").clicked() && !self.playing {
-                        self.launcher_open = true;
-                    }
-
-                    ui.text_edit_singleline(&mut self.path);
-
-                    ui.separator();
-
-                    if self.playing {
-                        if ui.button("■ Stop").clicked() {
-                            self.unlock_mouse(ctx);
-                            self.stop();
-                        }
-                    } else if ui.button("▶ Play").clicked() {
-                        self.play();
-                    }
-
-                    ui.separator();
-                    ui.label("Cinematic");
-                    ui.separator();
-                    self.gizmo_toolbar(ui);
-                    ui.separator();
-                    self.player_toolbar(ui);
+                ui.separator();
+                ui.menu_button("Graphics", |ui| {
+                    self.graphics_settings(ui);
                 });
+                ui.separator();
+                self.gizmo_toolbar(ui);
+                ui.separator();
+                self.player_toolbar(ui);
             });
+        });
 
         egui::SidePanel::left("hierarchy")
             .default_width(190.0)
@@ -681,10 +744,10 @@ impl eframe::App for GXEngine {
                 ui.heading("Hierarchy");
                 ui.separator();
 
-                if ui.selectable_label(
-                    self.environment_selected,
-                    "Environment",
-                ).clicked() {
+                if ui
+                    .selectable_label(self.environment_selected, "Environment")
+                    .clicked()
+                {
                     self.environment_selected = true;
                     self.selected = None;
                 }
@@ -693,6 +756,12 @@ impl eframe::App for GXEngine {
 
                 ui.add_enabled_ui(!self.playing, |ui| {
                     ui.menu_button("+ Add Object", |ui| {
+                        if ui.button("Point Light").clicked() {
+                            self.spawn_light();
+                            ui.close_menu();
+                        }
+
+                        ui.separator();
                         if ui.button("Cube").clicked() {
                             self.spawn(Shape::Cube);
                             ui.close_menu();
@@ -710,13 +779,11 @@ impl eframe::App for GXEngine {
                     });
                 });
 
-                for (i, object) in
-                    self.scene.objects.iter().enumerate()
-                {
-                    if ui.selectable_label(
-                        self.selected == Some(i),
-                        &object.name,
-                    ).clicked() {
+                for (i, object) in self.scene.objects.iter().enumerate() {
+                    if ui
+                        .selectable_label(self.selected == Some(i), &object.name)
+                        .clicked()
+                    {
                         self.selected = Some(i);
                         self.environment_selected = false;
                     }
@@ -730,8 +797,7 @@ impl eframe::App for GXEngine {
                             && self.scene.objects.len() < MAX_OBJECTS
                             && self.scene.objects[index].player_mode == 0
                         {
-                            let mut obj =
-                                self.scene.objects[index].clone();
+                            let mut obj = self.scene.objects[index].clone();
 
                             obj.name.push_str(" Copy");
                             obj.position[0] += 1.5;
@@ -759,98 +825,56 @@ impl eframe::App for GXEngine {
 
                         ui.heading("Cinematic Environment");
 
-                        ui.add(
-                            egui::Slider::new(
-                                &mut env.exposure, 0.1..=3.0
-                            ).text("Exposure")
-                        );
+                        ui.add(egui::Slider::new(&mut env.exposure, 0.1..=3.0).text("Exposure"));
 
-                        ui.add(
-                            egui::Slider::new(
-                                &mut env.sun, 0.0..=8.0
-                            ).text("Sun energy")
-                        );
+                        ui.add(egui::Slider::new(&mut env.sun, 0.0..=8.0).text("Sun energy"));
 
                         ui.separator();
                         ui.heading("SDF Indirect Lighting");
 
-                        ui.add(
-                            egui::Slider::new(
-                                &mut env.gi, 0.0..=2.0
-                            ).text("GI strength")
-                        );
+                        ui.add(egui::Slider::new(&mut env.gi, 0.0..=2.0).text("GI strength"));
 
                         ui.add(
-                            egui::Slider::new(
-                                &mut env.gi_distance, 1.0..=15.0
-                            ).text("GI distance")
+                            egui::Slider::new(&mut env.gi_distance, 1.0..=15.0).text("GI distance"),
                         );
 
                         ui.separator();
                         ui.heading("Effects");
 
+                        ui.add(egui::Slider::new(&mut env.ao, 0.0..=2.0).text("Ambient occlusion"));
+
+                        ui.add(egui::Slider::new(&mut env.fog, 0.0..=0.1).text("Fog"));
+
                         ui.add(
-                            egui::Slider::new(
-                                &mut env.ao, 0.0..=2.0
-                            ).text("Ambient occlusion")
+                            egui::Slider::new(&mut env.shadow_softness, 2.0..=40.0)
+                                .text("Shadow sharpness"),
                         );
 
                         ui.add(
-                            egui::Slider::new(
-                                &mut env.fog, 0.0..=0.1
-                            ).text("Fog")
+                            egui::Slider::new(&mut env.reflections, 0.0..=1.0).text("Reflections"),
                         );
 
-                        ui.add(
-                            egui::Slider::new(
-                                &mut env.shadow_softness,
-                                2.0..=40.0
-                            ).text("Shadow sharpness")
-                        );
-
-                        ui.add(
-                            egui::Slider::new(
-                                &mut env.reflections, 0.0..=1.0
-                            ).text("Reflections")
-                        );
-
-                        ui.add(
-                            egui::Slider::new(
-                                &mut env.glow, 0.0..=1.0
-                            ).text("Emissive glow")
-                        );
+                        ui.add(egui::Slider::new(&mut env.glow, 0.0..=1.0).text("Emissive glow"));
 
                         ui.separator();
 
-                        ui.add(
-                            egui::Slider::new(
-                                &mut env.gravity, 0.0..=30.0
-                            ).text("Gravity")
-                        );
+                        ui.add(egui::Slider::new(&mut env.gravity, 0.0..=30.0).text("Gravity"));
 
                         if ui.button("Reset Environment").clicked() {
                             *env = Environment::default();
                         }
                     } else if let Some(index) = self.selected {
-                        if let Some(obj) =
-                            self.scene.objects.get_mut(index)
-                        {
+                        if let Some(obj) = self.scene.objects.get_mut(index) {
                             ui.text_edit_singleline(&mut obj.name);
 
                             ui.separator();
                             ui.heading("Transform");
 
-                            vector_editor(
-                                ui, "Position", &mut obj.position
-                            );
+                            vector_editor(ui, "Position", &mut obj.position);
 
-                            vector_editor(
-                                ui, "Rotation", &mut obj.rotation
-                            );
+                            vector_editor(ui, "Rotation", &mut obj.rotation);
 
-                            vector_editor(
-                                ui, "Scale", &mut obj.scale
-                            );
+                            vector_editor(ui, "Scale", &mut obj.scale);
 
                             ui.separator();
                             ui.heading("Material");
@@ -858,22 +882,19 @@ impl eframe::App for GXEngine {
                             ui.color_edit_button_rgb(&mut obj.color);
 
                             ui.add(
-                                egui::Slider::new(
-                                    &mut obj.metallic, 0.0..=1.0
-                                ).text("Metallic")
+                                egui::Slider::new(&mut obj.metallic, 0.0..=1.0).text("Metallic"),
                             );
 
                             ui.add(
-                                egui::Slider::new(
-                                    &mut obj.roughness, 0.02..=1.0
-                                ).text("Roughness")
+                                egui::Slider::new(&mut obj.roughness, 0.02..=1.0).text("Roughness"),
                             );
 
                             ui.add(
-                                egui::Slider::new(
-                                    &mut obj.emission, 0.0..=10.0
-                                ).text("Emission")
+                                egui::Slider::new(&mut obj.emission, 0.0..=10.0).text("Emission"),
                             );
+
+                            ui.separator();
+                            lighting::light_inspector(ui, obj);
 
                             ui.separator();
                             ui.heading("Physics");
@@ -883,41 +904,29 @@ impl eframe::App for GXEngine {
                                 ui.separator();
                                 ui.heading("Character Controller");
 
-                                ui.selectable_value(
-                                    &mut obj.player_mode,
-                                    1,
-                                    "First Person"
-                                );
+                                ui.selectable_value(&mut obj.player_mode, 1, "First Person");
 
-                                ui.selectable_value(
-                                    &mut obj.player_mode,
-                                    2,
-                                    "Third Person"
+                                ui.selectable_value(&mut obj.player_mode, 2, "Third Person");
+
+                                ui.add(
+                                    egui::Slider::new(&mut obj.walk_speed, 1.0..=20.0)
+                                        .text("Walk Speed"),
                                 );
 
                                 ui.add(
-                                    egui::Slider::new(
-                                        &mut obj.walk_speed, 1.0..=20.0
-                                    ).text("Walk Speed")
+                                    egui::Slider::new(&mut obj.sprint_speed, 1.0..=30.0)
+                                        .text("Sprint Speed"),
                                 );
 
                                 ui.add(
-                                    egui::Slider::new(
-                                        &mut obj.sprint_speed, 1.0..=30.0
-                                    ).text("Sprint Speed")
-                                );
-
-                                ui.add(
-                                    egui::Slider::new(
-                                        &mut obj.jump_speed, 1.0..=20.0
-                                    ).text("Jump Speed")
+                                    egui::Slider::new(&mut obj.jump_speed, 1.0..=20.0)
+                                        .text("Jump Speed"),
                                 );
 
                                 if obj.player_mode == 2 {
                                     ui.add(
-                                        egui::Slider::new(
-                                            &mut obj.camera_distance, 2.0..=15.0
-                                        ).text("Camera Distance")
+                                        egui::Slider::new(&mut obj.camera_distance, 2.0..=15.0)
+                                            .text("Camera Distance"),
                                     );
                                 }
                             }
@@ -928,30 +937,23 @@ impl eframe::App for GXEngine {
                 });
             });
 
-        egui::TopBottomPanel::bottom("status")
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(&self.status);
-                    ui.separator();
-                    ui.label(format!("{:.0} FPS", self.fps));
-                    ui.separator();
-                    ui.label(format!(
-                        "{} objects",
-                        self.scene.objects.len()
-                    ));
-                    ui.separator();
-                    ui.label("GX Cinematic");
-                });
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(&self.status);
+                ui.separator();
+                ui.label(format!("{:.0} FPS", self.fps));
+                ui.separator();
+                ui.label(format!("{} objects", self.scene.objects.len()));
+                ui.separator();
+                ui.label("GX Cinematic");
             });
-            self.show_browser(ctx);
+        });
+        self.show_browser(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let size = ui.available_size();
 
-            let (rect, response) = ui.allocate_exact_size(
-                size,
-                egui::Sense::click_and_drag(),
-            );
+            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
 
             if !(self.playing && self.scene.objects.iter().any(|o| o.player_mode != 0))
                 && (response.hovered() || response.dragged())
@@ -960,11 +962,7 @@ impl eframe::App for GXEngine {
                 let right = forward.cross(Vec3::Y).normalize();
 
                 ctx.input(|input| {
-                    let speed = if input.modifiers.shift {
-                        12.0
-                    } else {
-                        4.0
-                    } * dt;
+                    let speed = if input.modifiers.shift { 12.0 } else { 4.0 } * dt;
 
                     if input.key_down(egui::Key::W) {
                         self.camera += forward * speed;
@@ -995,26 +993,24 @@ impl eframe::App for GXEngine {
 
                         self.yaw += delta.x * 0.004;
 
-                        self.pitch = (
-                            self.pitch - delta.y * 0.004
-                        ).clamp(-1.5, 1.5);
+                        self.pitch = (self.pitch - delta.y * 0.004).clamp(-1.5, 1.5);
                     }
                 });
             }
 
             self.player_mouse(ctx, &response);
 
-            let aspect = rect.width()
-                / rect.height().max(1.0);
+            let aspect = rect.width() / rect.height().max(1.0);
 
             let uniforms = self.uniforms(aspect);
 
-            ui.painter().add(
-                egui_wgpu::Callback::new_paint_callback(
-                    rect,
-                    ViewportCallback { uniforms },
-                )
-            );
+            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                rect,
+                ViewportCallback {
+                    uniforms,
+                    vertices: self.mesh_vertices(),
+                },
+            ));
 
             self.draw_gizmos(ui, rect);
 
@@ -1036,11 +1032,8 @@ impl eframe::App for GXEngine {
                 if self.mouse_locked {
                     let center = rect.center();
 
-                    ui.painter().circle_filled(
-                        center,
-                        2.0,
-                        egui::Color32::WHITE,
-                    );
+                    ui.painter()
+                        .circle_filled(center, 2.0, egui::Color32::WHITE);
                 }
             }
             ui.painter().text(
@@ -1052,6 +1045,7 @@ impl eframe::App for GXEngine {
             );
         });
 
+        self.blueprint_window(ctx);
         ctx.request_repaint();
     }
 }
@@ -1059,17 +1053,16 @@ impl eframe::App for GXEngine {
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        depth_buffer: 32,
         viewport: egui::ViewportBuilder::default()
             .with_title("GXEngine")
             .with_inner_size([1440.0, 850.0]),
         ..Default::default()
-        };
+    };
 
     eframe::run_native(
         "GXEngine",
         options,
-        Box::new(|cc| {
-            Ok(Box::new(GXEngine::new(cc)))
-        }),
+        Box::new(|cc| Ok(Box::new(GXEngine::new(cc)))),
     )
 }

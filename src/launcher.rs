@@ -7,9 +7,9 @@ impl GXEngine {
         if name.is_empty()
             || name == "."
             || name == ".."
-            || name.chars().any(|c| {
-                !c.is_alphanumeric() && c != ' ' && c != '_' && c != '-'
-            })
+            || name
+                .chars()
+                .any(|c| !c.is_alphanumeric() && c != ' ' && c != '_' && c != '-')
         {
             return Err("Invalid project name".into());
         }
@@ -29,8 +29,7 @@ impl GXEngine {
             "Assets/Scripts",
             "Scenes",
         ] {
-            std::fs::create_dir_all(root.join(folder))
-                .map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(root.join(folder)).map_err(|e| e.to_string())?;
         }
 
         self.scene = Scene::default();
@@ -47,17 +46,11 @@ impl GXEngine {
 
                 for y in 0..5 {
                     for x in 0..4 {
-                        let mut object =
-                            Object::new(Shape::Cube);
+                        let mut object = Object::new(Shape::Cube);
 
-                        object.name =
-                            format!("Physics Cube {} {}", x, y);
+                        object.name = format!("Physics Cube {} {}", x, y);
 
-                        object.position = [
-                            x as f32 * 1.2 - 2.0,
-                            y as f32 * 1.2 + 0.5,
-                            0.0,
-                        ];
+                        object.position = [x as f32 * 1.2 - 2.0, y as f32 * 1.2 + 0.5, 0.0];
 
                         self.scene.objects.push(object);
                     }
@@ -69,11 +62,9 @@ impl GXEngine {
 
         let path = root.join("Scenes/Main.gxscene");
 
-        let data = serde_json::to_string_pretty(&self.scene)
-            .map_err(|e| e.to_string())?;
+        let data = serde_json::to_string_pretty(&self.scene).map_err(|e| e.to_string())?;
 
-        std::fs::write(&path, data)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
 
         self.path = path.to_string_lossy().into_owned();
         self.project_dir = root.clone();
@@ -94,18 +85,14 @@ impl GXEngine {
 
         let result = std::fs::read_to_string(&scene_path)
             .map_err(|e| e.to_string())
-            .and_then(|data| {
-                serde_json::from_str::<Scene>(&data)
-                    .map_err(|e| e.to_string())
-            });
+            .and_then(|data| serde_json::from_str::<Scene>(&data).map_err(|e| e.to_string()));
 
         match result {
             Ok(mut scene) => {
                 scene.objects.truncate(MAX_OBJECTS);
 
                 self.scene = scene;
-                self.path =
-                    scene_path.to_string_lossy().into_owned();
+                self.path = scene_path.to_string_lossy().into_owned();
 
                 self.project_dir = path.clone();
                 self.browser_dir = path;
@@ -124,10 +111,7 @@ impl GXEngine {
         }
     }
 
-    pub(super) fn show_launcher(
-        &mut self,
-        ctx: &egui::Context,
-    ) {
+    pub(super) fn show_launcher(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(30.0);
 
@@ -136,11 +120,7 @@ impl GXEngine {
                     egui::RichText::new("GXEngine")
                         .size(48.0)
                         .strong()
-                        .color(
-                            egui::Color32::from_rgb(
-                                190, 155, 255
-                            )
-                        )
+                        .color(egui::Color32::from_rgb(190, 155, 255)),
                 );
 
                 ui.label("Create something extraordinary.");
@@ -157,36 +137,18 @@ impl GXEngine {
                 ui.add_space(12.0);
 
                 ui.label("Project name");
-                ui.text_edit_singleline(
-                    &mut self.project_name
-                );
+                ui.text_edit_singleline(&mut self.project_name);
 
                 ui.add_space(15.0);
                 ui.heading("Starter Templates");
 
                 for (index, title, desc) in [
-                    (
-                        0,
-                        "Empty",
-                        "Start completely from scratch"
-                    ),
-                    (
-                        1,
-                        "3D Starter",
-                        "Cinematic environment and primitives"
-                    ),
-                    (
-                        2,
-                        "Physics Sandbox",
-                        "Spawn a stack of physics objects"
-                    ),
+                    (0, "Empty", "Start completely from scratch"),
+                    (1, "3D Starter", "Cinematic environment and primitives"),
+                    (2, "Physics Sandbox", "Spawn a stack of physics objects"),
                 ] {
                     ui.group(|ui| {
-                        ui.selectable_value(
-                            &mut self.template,
-                            index,
-                            title,
-                        );
+                        ui.selectable_value(&mut self.template, index, title);
 
                         ui.label(desc);
                     });
@@ -194,10 +156,10 @@ impl GXEngine {
                     ui.add_space(8.0);
                 }
 
-                if ui.add_sized(
-                    [200.0, 40.0],
-                    egui::Button::new("Create Project")
-                ).clicked() {
+                if ui
+                    .add_sized([200.0, 40.0], egui::Button::new("Create Project"))
+                    .clicked()
+                {
                     if let Err(error) = self.create_project() {
                         self.status = error;
                     }
@@ -208,23 +170,17 @@ impl GXEngine {
                 ui.heading("Existing Projects");
                 ui.add_space(12.0);
 
-                if let Ok(entries) =
-                    std::fs::read_dir("projects")
-                {
+                if let Ok(entries) = std::fs::read_dir("projects") {
                     for entry in entries.flatten() {
                         let path = entry.path();
 
-                        if path.is_dir()
-                            && path.join("Scenes/Main.gxscene").exists()
-                        {
-                            let name = entry.file_name()
-                                .to_string_lossy()
-                                .into_owned();
+                        if path.is_dir() && path.join("Scenes/Main.gxscene").exists() {
+                            let name = entry.file_name().to_string_lossy().into_owned();
 
-                            if ui.add_sized(
-                                [240.0, 44.0],
-                                egui::Button::new(name),
-                            ).clicked() {
+                            if ui
+                                .add_sized([240.0, 44.0], egui::Button::new(name))
+                                .clicked()
+                            {
                                 self.open_project(path);
                             }
                         }

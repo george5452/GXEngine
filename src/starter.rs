@@ -2,15 +2,15 @@ use super::*;
 
 const MATERIALS: [(&str, [f32; 3], f32, f32); 10] = [
     ("Concrete", [0.60, 0.60, 0.59], 0.0, 0.9),
-    ("Grass",    [0.32, 0.45, 0.24], 0.0, 0.95),
-    ("Wood",     [0.59, 0.44, 0.29], 0.0, 0.75),
-    ("Steel",    [0.64, 0.66, 0.71], 0.95, 0.28),
-    ("Gold",     [0.91, 0.73, 0.31], 1.0, 0.22),
-    ("Rubber",   [0.19, 0.20, 0.22], 0.0, 0.85),
-    ("Plastic",  [0.88, 0.34, 0.29], 0.0, 0.35),
-    ("Stone",    [0.41, 0.42, 0.44], 0.0, 0.98),
-    ("Sand",     [0.84, 0.74, 0.56], 0.0, 1.0),
-    ("Snow",     [0.93, 0.95, 1.00], 0.0, 0.8),
+    ("Grass", [0.32, 0.45, 0.24], 0.0, 0.95),
+    ("Wood", [0.59, 0.44, 0.29], 0.0, 0.75),
+    ("Steel", [0.64, 0.66, 0.71], 0.95, 0.28),
+    ("Gold", [0.91, 0.73, 0.31], 1.0, 0.22),
+    ("Rubber", [0.19, 0.20, 0.22], 0.0, 0.85),
+    ("Plastic", [0.88, 0.34, 0.29], 0.0, 0.35),
+    ("Stone", [0.41, 0.42, 0.44], 0.0, 0.98),
+    ("Sand", [0.84, 0.74, 0.56], 0.0, 1.0),
+    ("Snow", [0.93, 0.95, 1.00], 0.0, 0.8),
 ];
 
 const PREFABS: [&str; 12] = [
@@ -110,7 +110,11 @@ fn prefab(name: &str) -> Vec<Object> {
             o.position = [0.0, 3.0, 0.0];
             o.scale = [2.0, 0.1, 2.0];
             o.color = [1.0, 0.85, 0.6];
-            o.emission = 6.0;
+            o.emission = 3.0;
+            o.light.enabled = true;
+            o.light.kind = 0;
+            o.light.energy = 40.0;
+            o.light.range = 12.0;
         }
 
         "Stairs" => {
@@ -121,11 +125,7 @@ fn prefab(name: &str) -> Vec<Object> {
                 let h = (i + 1) as f32 * 0.25;
 
                 step.name = format!("Step {}", i + 1);
-                step.position = [
-                    0.0,
-                    h * 0.5,
-                    i as f32 * 0.5
-                ];
+                step.position = [0.0, h * 0.5, i as f32 * 0.5];
                 step.scale = [2.0, h, 0.5];
 
                 objects.push(step);
@@ -141,32 +141,20 @@ fn prefab(name: &str) -> Vec<Object> {
 }
 
 impl GXEngine {
-    pub(super) fn show_starter(
-        &mut self,
-        ui: &mut egui::Ui,
-    ) {
+    pub(super) fn show_starter(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("GXStarter");
 
-            ui.selectable_value(
-                &mut self.starter_tab,
-                0,
-                "Prefabs",
-            );
+            ui.selectable_value(&mut self.starter_tab, 0, "Prefabs");
 
-            ui.selectable_value(
-                &mut self.starter_tab,
-                1,
-                "Materials",
-            );
+            ui.selectable_value(&mut self.starter_tab, 1, "Materials");
         });
 
         ui.separator();
 
         ui.add(
-            egui::TextEdit::singleline(
-                &mut self.starter_search
-            ).hint_text("Search starter content...")
+            egui::TextEdit::singleline(&mut self.starter_search)
+                .hint_text("Search starter content..."),
         );
 
         let search = self.starter_search.to_lowercase();
@@ -179,39 +167,30 @@ impl GXEngine {
                             continue;
                         }
 
-                        if ui.add_sized(
-                            [120.0, 64.0],
-                            egui::Button::new(
-                                format!("3D\n{}", name)
-                            )
-                        ).clicked() && !self.playing {
+                        if ui
+                            .add_sized([120.0, 64.0], egui::Button::new(format!("3D\n{}", name)))
+                            .clicked()
+                            && !self.playing
+                        {
                             let objects = prefab(name);
 
-                            if self.scene.objects.len()
-                                + objects.len() > MAX_OBJECTS
-                            {
-                                self.status =
-                                    "Object limit reached".into();
+                            if self.scene.objects.len() + objects.len() > MAX_OBJECTS {
+                                self.status = "Object limit reached".into();
 
                                 continue;
                             }
 
                             self.scene.objects.extend(objects);
 
-                            self.selected = Some(
-                                self.scene.objects.len() - 1
-                            );
+                            self.selected = Some(self.scene.objects.len() - 1);
 
                             self.environment_selected = false;
 
-                            self.status =
-                                format!("Added {}", name);
+                            self.status = format!("Added {}", name);
                         }
                     }
                 } else {
-                    for (name, color, metallic, roughness)
-                        in MATERIALS
-                    {
+                    for (name, color, metallic, roughness) in MATERIALS {
                         if !name.to_lowercase().contains(&search) {
                             continue;
                         }
@@ -223,30 +202,20 @@ impl GXEngine {
                         );
 
                         let button = egui::Button::new(
-                            egui::RichText::new(
-                                format!("●\n{}", name)
-                            ).color(tint)
+                            egui::RichText::new(format!("●\n{}", name)).color(tint),
                         );
 
-                        if ui.add_sized(
-                            [110.0, 65.0],
-                            button,
-                        ).clicked() && !self.playing {
+                        if ui.add_sized([110.0, 65.0], button).clicked() && !self.playing {
                             if let Some(index) = self.selected {
-                                if let Some(object) =
-                                    self.scene.objects.get_mut(index)
-                                {
+                                if let Some(object) = self.scene.objects.get_mut(index) {
                                     object.color = color;
                                     object.metallic = metallic;
                                     object.roughness = roughness;
 
-                                    self.status = format!(
-                                        "Applied {}", name
-                                    );
+                                    self.status = format!("Applied {}", name);
                                 }
                             } else {
-                                self.status =
-                                    "Select an object first".into();
+                                self.status = "Select an object first".into();
                             }
                         }
                     }

@@ -7,16 +7,16 @@ pub(super) struct GXPhysics {
     broad: BroadPhaseMultiSap,
     narrow: NarrowPhase,
 
-    bodies: RigidBodySet,
+    pub(super) bodies: RigidBodySet,
     colliders: ColliderSet,
 
     joints: ImpulseJointSet,
     multibody: MultibodyJointSet,
     ccd: CCDSolver,
 
-    handles: Vec<Option<RigidBodyHandle>>,
+    pub(super) handles: Vec<Option<RigidBodyHandle>>,
     accumulator: f32,
-    player: Option<RigidBodyHandle>,
+    pub(super) player: Option<RigidBodyHandle>,
     player_collider: Option<ColliderHandle>,
 }
 
@@ -44,26 +44,23 @@ impl GXPhysics {
         let ground = world.bodies.insert(
             RigidBodyBuilder::fixed()
                 .translation(vector![0.0, -0.5, 0.0])
-                .build()
+                .build(),
         );
 
         world.colliders.insert_with_parent(
-            ColliderBuilder::cuboid(
-                50000.0, 0.5, 50000.0
-            )
-            .friction(0.8)
-            .build(),
-
+            ColliderBuilder::cuboid(50000.0, 0.5, 50000.0)
+                .friction(0.8)
+                .build(),
             ground,
             &mut world.bodies,
         );
 
         for object in &scene.objects {
-            if object.player_mode != 0 {
+            if object.player_mode != 0 || object.light_only {
                 world.handles.push(None);
                 continue;
             }
-            let builder = if object.dynamic {
+            let builder = if object.dynamic && object.shape != Shape::Mesh {
                 RigidBodyBuilder::dynamic()
             } else {
                 RigidBodyBuilder::fixed()
@@ -75,20 +72,18 @@ impl GXPhysics {
                     object.position[1],
                     object.position[2]
                 ])
-                .position(
-                    Isometry::from_parts(
-                        nalgebra::Translation3::new(
-                            object.position[0],
-                            object.position[1],
-                            object.position[2],
-                        ),
-                        nalgebra::UnitQuaternion::from_euler_angles(
-                            object.rotation[0].to_radians(),
-                            object.rotation[1].to_radians(),
-                            object.rotation[2].to_radians(),
-                        ),
-                    )
-                )
+                .position(Isometry::from_parts(
+                    nalgebra::Translation3::new(
+                        object.position[0],
+                        object.position[1],
+                        object.position[2],
+                    ),
+                    nalgebra::UnitQuaternion::from_euler_angles(
+                        object.rotation[0].to_radians(),
+                        object.rotation[1].to_radians(),
+                        object.rotation[2].to_radians(),
+                    ),
+                ))
                 .ccd_enabled(true)
                 .linear_damping(0.05)
                 .angular_damping(0.05)
@@ -101,35 +96,47 @@ impl GXPhysics {
             let z = object.scale[2].abs().max(0.05) * 0.5;
 
             let collider = match object.shape {
-                Shape::Cube => {
-                    ColliderBuilder::cuboid(x, y, z)
+                Shape::Mesh => {
+                    let mut vertices = Vec::new();
+                    let mut triangles = Vec::new();
+
+                    for mesh in &object.meshes {
+                        let offset = vertices.len() as u32;
+
+                        for p in &mesh.positions {
+                            vertices.push(point![
+                                p[0] * object.scale[0].max(0.05),
+                                p[1] * object.scale[1].max(0.05),
+                                p[2] * object.scale[2].max(0.05)
+                            ]);
+                        }
+
+                        for tri in mesh.indices.chunks_exact(3) {
+                            triangles.push([tri[0] + offset, tri[1] + offset, tri[2] + offset]);
+                        }
+                    }
+
+                    match ColliderBuilder::trimesh(vertices, triangles) {
+                        Ok(collider) => collider,
+
+                        Err(_) => ColliderBuilder::cuboid(x, y, z),
+                    }
                 }
+                Shape::Cube => ColliderBuilder::cuboid(x, y, z),
 
                 Shape::Capsule => {
                     let radius = x.min(z) * 0.4;
 
-                    ColliderBuilder::capsule_y(
-                        (y - radius).max(0.01),
-                        radius
-                    )
+                    ColliderBuilder::capsule_y((y - radius).max(0.01), radius)
                 }
 
-                Shape::Sphere => {
-                    ColliderBuilder::ball(x.max(y).max(z))
-                }
+                Shape::Sphere => ColliderBuilder::ball(x.max(y).max(z)),
 
-                Shape::Cylinder => {
-                    ColliderBuilder::cylinder(y, x.max(z))
-                }
+                Shape::Cylinder => ColliderBuilder::cylinder(y, x.max(z)),
             };
 
             world.colliders.insert_with_parent(
-                collider
-                    .mass(1.0)
-                    .friction(0.7)
-                    .restitution(0.15)
-                    .build(),
-
+                collider.mass(1.0).friction(0.7).restitution(0.15).build(),
                 handle,
                 &mut world.bodies,
             );
@@ -140,21 +147,12 @@ impl GXPhysics {
         world
     }
 
-    pub(super) fn update(
-        &mut self,
-        scene: &mut Scene,
-        dt: f32,
-    ) {
+    pub(super) fn update(&mut self, scene: &mut Scene, dt: f32) {
         self.accumulator += dt.min(0.1);
 
-        let gravity = vector![
-            0.0,
-            -scene.environment.gravity,
-            0.0
-        ];
+        let gravity = vector![0.0, -scene.environment.gravity, 0.0];
 
-        let mut parameters =
-            IntegrationParameters::default();
+        let mut parameters = IntegrationParameters::default();
 
         parameters.dt = 1.0 / 60.0;
 
@@ -189,34 +187,22 @@ impl GXPhysics {
 
                     object.position = [p.x, p.y, p.z];
 
-                    let (x, y, z) =
-                        body.rotation().euler_angles();
+                    let (x, y, z) = body.rotation().euler_angles();
 
-                    object.rotation = [
-                        x.to_degrees(),
-                        y.to_degrees(),
-                        z.to_degrees(),
-                    ];
+                    object.rotation = [x.to_degrees(), y.to_degrees(), z.to_degrees()];
                 }
             }
         }
     }
 }
 impl GXPhysics {
-    pub(super) fn spawn_player(
-        &mut self,
-        position: [f32; 3],
-    ) {
+    pub(super) fn spawn_player(&mut self, position: [f32; 3]) {
         if self.player.is_some() {
             return;
         }
 
         let body = RigidBodyBuilder::dynamic()
-            .translation(vector![
-                position[0],
-                position[1].max(1.0),
-                position[2]
-            ])
+            .translation(vector![position[0], position[1].max(1.0), position[2]])
             .lock_rotations()
             .ccd_enabled(true)
             .linear_damping(0.0)
@@ -296,16 +282,10 @@ impl GXPhysics {
         body.set_linvel(velocity, true);
     }
 
-    pub(super) fn player_camera(
-        &self,
-    ) -> Option<glam::Vec3> {
+    pub(super) fn player_camera(&self) -> Option<glam::Vec3> {
         let body = self.bodies.get(self.player?)?;
         let p = body.translation();
 
-        Some(glam::Vec3::new(
-            p.x,
-            p.y + 0.65,
-            p.z,
-        ))
+        Some(glam::Vec3::new(p.x, p.y + 0.65, p.z))
     }
 }
