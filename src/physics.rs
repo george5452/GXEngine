@@ -100,7 +100,7 @@ impl GXPhysics {
                     let mut vertices = Vec::new();
                     let mut triangles = Vec::new();
 
-                    for mesh in &object.meshes {
+                    for mesh in object.meshes.iter() {
                         let offset = vertices.len() as u32;
 
                         for p in &mesh.positions {

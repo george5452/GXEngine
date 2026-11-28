@@ -232,7 +232,7 @@ impl Default for GXScripter {
 // GXS LANGUAGE TRANSLATION
 // ==========================================
 
-fn translate(source: &str) -> String {
+pub(super) fn translate(source: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
 
     let mut output = String::new();
@@ -363,19 +363,25 @@ impl GXScripter {
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
 
         for tab in &mut self.tabs {
-            if !tab.dirty {
-                continue;
+            if tab.dirty {
+                if !valid_filename(&tab.name) {
+                    return Err("Invalid script name".into());
+                }
+
+                fs::write(directory.join(&tab.name), &tab.source).map_err(|e| e.to_string())?;
+
+                tab.dirty = false;
             }
-
-            fs::write(directory.join(&tab.name), &tab.source).map_err(|e| e.to_string())?;
-
-            tab.dirty = false;
         }
 
         Ok(())
     }
 
-    fn open_script(&mut self, project: &std::path::Path, name: &str) -> Result<(), String> {
+    pub(super) fn open_script(
+        &mut self,
+        project: &std::path::Path,
+        name: &str,
+    ) -> Result<(), String> {
         if !valid_filename(name) {
             return Err("Invalid script name".into());
         }
@@ -383,6 +389,7 @@ impl GXScripter {
         if let Some(index) = self.tabs.iter().position(|tab| tab.name == name) {
             self.active = index;
             self.open = true;
+
             return Ok(());
         }
 
@@ -401,7 +408,11 @@ impl GXScripter {
         Ok(())
     }
 
-    fn create_script(&mut self, project: &std::path::Path, name: &str) -> Result<String, String> {
+    pub(super) fn create_script(
+        &mut self,
+        project: &std::path::Path,
+        name: &str,
+    ) -> Result<String, String> {
         let name = format!("{}.gxs", name.trim());
 
         if !valid_filename(&name) {

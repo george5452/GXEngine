@@ -89,11 +89,16 @@ impl GXEngine {
 
         match result {
             Ok(mut scene) => {
+                if let Err(error) = assets::hydrate_scene(&mut scene, &path) {
+                    self.status = error;
+                    return;
+                }
                 scene.objects.truncate(MAX_OBJECTS);
 
                 self.scene = scene;
                 self.path = scene_path.to_string_lossy().into_owned();
                 self.scripter = scripting::GXScripter::default();
+                self.gui_editor = gui::GUIEditor::default();
 
                 self.project_dir = path.clone();
                 self.browser_dir = path;

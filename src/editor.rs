@@ -31,6 +31,18 @@ mod lighting;
 #[path = "scripting.rs"]
 mod scripting;
 
+#[path = "gui.rs"]
+mod gui;
+
+#[path = "scenes.rs"]
+mod scenes;
+
+#[path = "materials.rs"]
+mod materials;
+
+#[path = "assets.rs"]
+mod assets;
+
 use bytemuck::{Pod, Zeroable};
 use eframe::{egui, egui_wgpu};
 use egui_wgpu::CallbackTrait;
@@ -65,13 +77,16 @@ struct Object {
     dynamic: bool,
 
     #[serde(default)]
+    mesh_asset: Option<String>,
+
+    #[serde(default)]
     light_only: bool,
 
     #[serde(default)]
     light: lighting::Light,
 
     #[serde(default)]
-    meshes: Vec<mesh::MeshData>,
+    meshes: std::sync::Arc<Vec<mesh::MeshData>>,
 
     #[serde(default)]
     player_mode: u8,
@@ -121,7 +136,8 @@ impl Object {
             roughness: 0.35,
             emission: 0.0,
             dynamic: true,
-            meshes: Vec::new(),
+            meshes: std::sync::Arc::new(Vec::new()),
+            mesh_asset: None,
 
             player_mode: 0,
             walk_speed: 5.0,
@@ -165,6 +181,8 @@ impl Default for Environment {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Scene {
+    #[serde(default)]
+    canvas: gui::Canvas,
     objects: Vec<Object>,
     environment: Environment,
 }
@@ -182,6 +200,7 @@ impl Default for Scene {
         Self {
             objects: vec![cube, sphere],
             environment: Environment::default(),
+            canvas: gui::Canvas::default(),
         }
     }
 }
@@ -220,6 +239,8 @@ struct GPUResources {
 }
 
 struct ViewportCallback {
+    pbr_paths: Vec<PathBuf>,
+    texture_paths: Vec<PathBuf>,
     vertices: Vec<mesh::MeshVertex>,
     uniforms: Uniforms,
 }
@@ -235,6 +256,12 @@ impl CallbackTrait for ViewportCallback {
     ) -> Vec<wgpu::CommandBuffer> {
         let gpu: &mut GPUResources = resources.get_mut().unwrap();
 
+        gpu.mesh
+            .textures
+            .upload(_device, queue, &self.texture_paths);
+        gpu.mesh
+            .pbr_textures
+            .upload(_device, queue, &self.pbr_paths);
         gpu.mesh.upload(_device, &self.vertices);
         gpu.lighting.upload(queue, &self.vertices);
 
@@ -388,6 +415,8 @@ fn initialize_gpu(cc: &eframe::CreationContext<'_>) {
 }
 
 struct GXEngine {
+    scene_manager: scenes::SceneManager,
+    gui_editor: gui::GUIEditor,
     scripter: scripting::GXScripter,
     scene: Scene,
     backup: Option<Scene>,
@@ -425,6 +454,8 @@ impl GXEngine {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
         Self {
+            scene_manager: scenes::SceneManager::default(),
+            gui_editor: gui::GUIEditor::default(),
             scripter: scripting::GXScripter::default(),
             scene: Scene::default(),
             backup: None,
@@ -511,29 +542,18 @@ impl GXEngine {
     }
 
     fn save(&mut self) {
-        match serde_json::to_string_pretty(&self.scene) {
-            Ok(data) => match std::fs::write(&self.path, data) {
-                Ok(_) => {
-                    self.status = "Scene saved".into();
-                }
-                Err(e) => self.status = e.to_string(),
-            },
-            Err(e) => self.status = e.to_string(),
-        }
-    }
+        match assets::save_scene(
+            &self.scene,
+            std::path::Path::new(&self.path),
+            &self.project_dir,
+        ) {
+            Ok(()) => {
+                self.status = "Scene saved".into();
+            }
 
-    fn load(&mut self) {
-        match std::fs::read_to_string(&self.path) {
-            Ok(data) => match serde_json::from_str::<Scene>(&data) {
-                Ok(mut scene) => {
-                    scene.objects.truncate(MAX_OBJECTS);
-                    self.scene = scene;
-                    self.selected = None;
-                    self.status = "Scene loaded".into();
-                }
-                Err(e) => self.status = e.to_string(),
-            },
-            Err(e) => self.status = e.to_string(),
+            Err(error) => {
+                self.status = error;
+            }
         }
     }
 
@@ -710,17 +730,14 @@ impl eframe::App for GXEngine {
 
                 ui.separator();
 
-                if ui.button("New").clicked() && !self.playing {
-                    self.scene = Scene::default();
-                    self.selected = None;
+                if !self.playing {
+                    ui.selectable_value(&mut self.gui_editor.open, false, "3D");
+
+                    ui.selectable_value(&mut self.gui_editor.open, true, "UI");
                 }
 
                 if ui.button("Save Project").clicked() && !self.playing {
                     self.save_project();
-                }
-
-                if ui.button("Open").clicked() && !self.playing {
-                    self.load();
                 }
 
                 if ui.button("Projects").clicked() && !self.playing {
@@ -732,7 +749,7 @@ impl eframe::App for GXEngine {
                     self.scripter.open = true;
                 }
 
-                ui.text_edit_singleline(&mut self.path);
+                self.scene_toolbar(ui);
 
                 ui.separator();
 
@@ -755,6 +772,25 @@ impl eframe::App for GXEngine {
                 self.player_toolbar(ui);
             });
         });
+
+        if self.playing && self.scene.canvas.ui_only {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+
+                self.gui_runtime(ui, rect);
+            });
+
+            self.scripting_window(ctx);
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.gui_editor.open && !self.playing {
+            self.gui_workspace(ctx);
+            self.scripting_window(ctx);
+            ctx.request_repaint();
+            return;
+        }
 
         egui::SidePanel::left("hierarchy")
             .default_width(190.0)
@@ -1022,7 +1058,16 @@ impl eframe::App for GXEngine {
                 });
             }
 
-            self.player_mouse(ctx, &response);
+            let over_ui = ctx.input(|i| {
+                i.pointer
+                    .hover_pos()
+                    .map(|p| self.gui_hit(rect, p))
+                    .unwrap_or(false)
+            });
+
+            if !self.playing || self.mouse_locked || !over_ui {
+                self.player_mouse(ctx, &response);
+            }
 
             let aspect = rect.width() / rect.height().max(1.0);
 
@@ -1033,10 +1078,16 @@ impl eframe::App for GXEngine {
                 ViewportCallback {
                     uniforms,
                     vertices: self.mesh_vertices(),
+                    texture_paths: self.mesh_texture_paths(),
+                    pbr_paths: self.mesh_pbr_paths(),
                 },
             ));
 
             self.draw_gizmos(ui, rect);
+
+            if self.playing {
+                self.gui_runtime(ui, rect);
+            }
 
             if self.playing {
                 let message = if self.mouse_locked {

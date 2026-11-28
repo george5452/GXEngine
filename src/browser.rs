@@ -147,9 +147,9 @@ impl GXEngine {
                         } else if matches!(ext, "glb" | "gltf") && !self.playing {
                             self.import_model(&path);
                         } else if ext == "gxscene" && !self.playing {
-                            self.path = path.to_string_lossy().into_owned();
-
-                            self.load();
+                            if let Err(error) = self.open_scene_file(path.clone()) {
+                                self.status = error;
+                            }
                         } else {
                             self.status = format!("Selected {}", name);
                         }

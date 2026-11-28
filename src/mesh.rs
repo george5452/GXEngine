@@ -2,12 +2,23 @@ use super::*;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct MeshData {
+    #[serde(default)]
+    pub uvs: Vec<[f32; 2]>,
+
+    #[serde(default)]
+    pub texture: Option<String>,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
     pub color: [f32; 3],
     pub metallic: f32,
     pub roughness: f32,
+
+    #[serde(default)]
+    pub pbr_texture: Option<String>,
+
+    #[serde(default)]
+    pub pbr_uvs: Vec<[f32; 2]>,
 }
 
 #[repr(C)]
@@ -17,9 +28,15 @@ pub(super) struct MeshVertex {
     normal: [f32; 3],
     color: [f32; 3],
     material: [f32; 2],
+    uv: [f32; 2],
+    texture_layer: f32,
+    pbr_uv: [f32; 2],
+    pbr_layer: f32,
 }
 
 pub(super) struct MeshGPU {
+    pub pbr_textures: materials::MaterialTextures,
+    pub textures: materials::MaterialTextures,
     pipeline: wgpu::RenderPipeline,
     buffer: Option<wgpu::Buffer>,
     count: u32,
@@ -29,6 +46,8 @@ fn import_node(
     node: gltf::Node<'_>,
     parent: glam::Mat4,
     buffers: &[gltf::buffer::Data],
+    images: &[gltf::image::Data],
+    project: &std::path::Path,
     meshes: &mut Vec<MeshData>,
 ) {
     let local = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
@@ -80,20 +99,79 @@ fn import_node(
             let material = primitive.material().pbr_metallic_roughness();
 
             let color = material.base_color_factor();
+            let uv_channel = material
+                .base_color_texture()
+                .map(|t| t.tex_coord())
+                .unwrap_or(0);
+
+            let uvs: Vec<[f32; 2]> = if let Some(coords) = reader.read_tex_coords(uv_channel) {
+                coords.into_f32().collect()
+            } else {
+                vec![[0.0, 0.0]; positions.len()]
+            };
+
+            let texture = material.base_color_texture().and_then(|info| {
+                let index = info.texture().source().index();
+
+                let data = images.get(index)?;
+
+                match materials::save_texture(data, project) {
+                    Ok(path) => Some(path),
+
+                    Err(error) => {
+                        eprintln!("[GXMaterial] {}", error);
+                        None
+                    }
+                }
+            });
+
+            let pbr_info = material.metallic_roughness_texture();
+
+            let pbr_channel = pbr_info.as_ref().map(|info| info.tex_coord()).unwrap_or(0);
+
+            let pbr_uvs: Vec<[f32; 2]> = if let Some(coords) = reader.read_tex_coords(pbr_channel) {
+                coords.into_f32().collect()
+            } else {
+                Vec::new()
+            };
+
+            let pbr_texture = pbr_info.and_then(|info| {
+                if pbr_uvs.is_empty() {
+                    return None;
+                }
+
+                let index = info.texture().source().index();
+
+                let data = images.get(index)?;
+
+                match materials::save_texture(data, project) {
+                    Ok(path) => Some(path),
+
+                    Err(error) => {
+                        eprintln!("[GXMaterial] PBR import: {}", error);
+
+                        None
+                    }
+                }
+            });
 
             meshes.push(MeshData {
+                uvs,
+                texture,
                 positions,
                 normals,
                 indices,
                 color: [color[0], color[1], color[2]],
                 metallic: material.metallic_factor(),
                 roughness: material.roughness_factor(),
+                pbr_texture,
+                pbr_uvs,
             });
         }
     }
 
     for child in node.children() {
-        import_node(child, world, buffers, meshes);
+        import_node(child, world, buffers, images, project, meshes);
     }
 }
 
@@ -122,8 +200,11 @@ fn calculate_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
         .collect()
 }
 
-pub(super) fn load_meshes(path: &std::path::Path) -> Result<Vec<MeshData>, String> {
-    let (document, buffers, _images) = gltf::import(path).map_err(|e| e.to_string())?;
+pub(super) fn load_meshes(
+    path: &std::path::Path,
+    project: &std::path::Path,
+) -> Result<Vec<MeshData>, String> {
+    let (document, buffers, images) = gltf::import(path).map_err(|e| e.to_string())?;
 
     let mut meshes = Vec::new();
 
@@ -133,7 +214,14 @@ pub(super) fn load_meshes(path: &std::path::Path) -> Result<Vec<MeshData>, Strin
         .ok_or("Model contains no scenes")?;
 
     for node in scene.nodes() {
-        import_node(node, glam::Mat4::IDENTITY, &buffers, &mut meshes);
+        import_node(
+            node,
+            glam::Mat4::IDENTITY,
+            &buffers,
+            &images,
+            project,
+            &mut meshes,
+        );
     }
 
     if meshes.is_empty() {
@@ -149,7 +237,7 @@ impl GXEngine {
             return;
         }
 
-        match load_meshes(path) {
+        match load_meshes(path, &self.project_dir) {
             Ok(meshes) => {
                 if self.scene.objects.len() >= MAX_OBJECTS {
                     self.status = "Object limit reached".into();
@@ -173,7 +261,8 @@ impl GXEngine {
                 object.dynamic = false;
                 object.color = [1.0; 3];
 
-                object.meshes = meshes;
+                object.meshes = std::sync::Arc::new(meshes);
+                object.mesh_asset = None;
 
                 self.scene.objects.push(object);
 
@@ -192,6 +281,8 @@ impl GXEngine {
     }
 
     pub(super) fn mesh_vertices(&self) -> Vec<MeshVertex> {
+        let texture_paths = self.mesh_texture_paths();
+        let pbr_paths = self.mesh_pbr_paths();
         let mut vertices = Vec::new();
 
         for object in &self.scene.objects {
@@ -216,7 +307,7 @@ impl GXEngine {
 
             let normal_matrix = glam::Mat3::from_mat4(transform).inverse().transpose();
 
-            for mesh in &object.meshes {
+            for mesh in object.meshes.iter() {
                 for &index in &mesh.indices {
                     let i = index as usize;
 
@@ -232,12 +323,72 @@ impl GXEngine {
                         normal: normal.to_array(),
                         color: color.to_array(),
                         material: [mesh.metallic, mesh.roughness],
+                        uv: mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]),
+                        pbr_uv: mesh.pbr_uvs.get(i).copied().unwrap_or([0.0, 0.0]),
+
+                        pbr_layer: mesh
+                            .pbr_texture
+                            .as_ref()
+                            .and_then(|texture| {
+                                let path = self.project_dir.join(texture);
+
+                                pbr_paths.iter().position(|p| p == &path)
+                            })
+                            .map(|index| index as f32)
+                            .unwrap_or(-1.0),
+
+                        texture_layer: mesh
+                            .texture
+                            .as_ref()
+                            .and_then(|texture| {
+                                let path = self.project_dir.join(texture);
+
+                                texture_paths.iter().position(|p| p == &path)
+                            })
+                            .map(|index| index as f32)
+                            .unwrap_or(-1.0),
                     });
                 }
             }
         }
 
         vertices
+    }
+
+    pub(super) fn mesh_texture_paths(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        for object in &self.scene.objects {
+            for mesh in object.meshes.iter() {
+                if let Some(texture) = &mesh.texture {
+                    let path = self.project_dir.join(texture);
+
+                    if !paths.contains(&path) && paths.len() < materials::MAX_TEXTURES {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+
+        paths
+    }
+
+    pub(super) fn mesh_pbr_paths(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        for object in &self.scene.objects {
+            for mesh in object.meshes.iter() {
+                if let Some(texture) = &mesh.pbr_texture {
+                    let path = self.project_dir.join(texture);
+
+                    if !paths.contains(&path) && paths.len() < materials::MAX_TEXTURES {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+
+        paths
     }
 }
 
@@ -247,6 +398,8 @@ impl MeshGPU {
         layout: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
     ) -> Self {
+        let textures = materials::MaterialTextures::new(device);
+        let pbr_textures = materials::MaterialTextures::new_linear(device);
         let source = format!(
             "{}\n{}\n{}",
             include_str!("cinematic.wgsl"),
@@ -261,7 +414,7 @@ impl MeshGPU {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("GXMesh Layout"),
-            bind_group_layouts: &[layout],
+            bind_group_layouts: &[layout, &textures.layout, &pbr_textures.layout],
             push_constant_ranges: &[],
         });
 
@@ -283,7 +436,11 @@ impl MeshGPU {
                         0 => Float32x3,
                         1 => Float32x3,
                         2 => Float32x3,
-                        3 => Float32x2
+                        3 => Float32x2,
+                        4 => Float32x2,
+                        5 => Float32,
+                        6 => Float32x2,
+                        7 => Float32
                     ],
                 }],
 
@@ -327,6 +484,8 @@ impl MeshGPU {
         });
 
         Self {
+            textures,
+            pbr_textures,
             pipeline,
             buffer: None,
             count: 0,
@@ -356,6 +515,8 @@ impl MeshGPU {
         if let Some(buffer) = &self.buffer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, bind_group, &[]);
+            pass.set_bind_group(1, &self.textures.bind_group, &[]);
+            pass.set_bind_group(2, &self.pbr_textures.bind_group, &[]);
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.draw(0..self.count, 0..1);
         }

@@ -1,80 +1,160 @@
 # GXEngine
 
-**Create something extraordinary.**
-
-A lightweight, native 3D game engine built with Rust, designed to deliver advanced graphics, flexible gameplay scripting and efficient resource usage without the overhead of a massive engine.
+### Your imagination. Your engine.
 
 ![Language](https://img.shields.io/badge/Language-Rust-orange)
-![Graphics](https://img.shields.io/badge/Graphics-WGPU-blue)
-![Physics](https://img.shields.io/badge/Physics-Rapier-purple)
-![Scripting](https://img.shields.io/badge/Scripting-GXScript-blueviolet)
-![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
+![Graphics](https://img.shields.io/badge/Graphics-WGPU-purple)
+![Physics](https://img.shields.io/badge/Physics-Rapier3D-blue)
+![Platform](https://img.shields.io/badge/Platform-Windows-0078D4)
 ![Status](https://img.shields.io/badge/Status-Active_Development-green)
+![Version](https://img.shields.io/badge/Version-0.2.0-purple)
 
-Developed by **GXGroup**.
+**GXEngine** is an independent, native Rust-powered game engine developed by **GeorgeBeeTaong**.
+
+Built with a focus on graphical quality, accessible game development, efficient resource usage, and developer freedom.
+
+GXEngine aims to provide a complete game development environment without unnecessary overhead.
 
 ---
 
-## About GXEngine
+## The Foundation Update
 
-GXEngine is a native game development environment focused on making 3D game creation accessible while maintaining advanced graphical capabilities.
+The latest development milestone introduces major improvements to game interface design, scene management, material rendering and asset storage.
 
-Our philosophy is simple:
+- GXUI visual interface designer
+- Scriptable UI elements
+- Independent scene creation and management
+- Runtime scene transitions
+- Textured GLB and glTF model importing
+- Metallic and roughness texture sampling
+- Shared mesh asset storage
+- Reduced geometry duplication
 
-- High-quality graphics.
-- Lightweight architecture.
-- Efficient memory and storage usage.
-- Accessible gameplay programming.
-- Minimal unnecessary dependencies.
-- Integrated game development tools.
+---
 
-GXEngine is being developed as a general-purpose game engine, not just a rendering demonstration.
+## GX Cinematic
 
-## Features
+GXEngine features a custom hybrid rendering architecture combining signed distance field rendering and mesh rasterization.
 
-### GX Cinematic Renderer
+### Rendering features
 
-A custom hybrid rendering system combining signed distance fields and conventional mesh rasterization.
+- Physically based shading
+- SDF global illumination approximation
+- Real-time reflections
+- Soft shadows
+- Ambient occlusion
+- BVH-based mesh lighting
+- Artificial point lights
+- Atmospheric fog
+- Exposure controls
+- ACES tone mapping
+- Configurable graphics settings
 
-- Physically based rendering.
-- SDF-based global illumination.
-- Real-time reflections.
-- Ambient occlusion.
-- BVH-accelerated mesh shadows.
-- Artificial point lights.
-- Adjustable atmospheric fog.
-- HDR lighting and tone mapping.
-- Metallic and roughness materials.
-- Emissive surfaces.
-- Customizable project graphics settings.
+The renderer is designed to deliver cinematic visuals while maintaining a relatively lightweight native architecture.
 
-### GXScript
+---
 
-GXEngine's integrated text-based gameplay scripting system.
+## GXMaterial
 
-GXScript combines familiar programming syntax with direct access to engine functionality.
+GXMaterial provides material processing and texture support for imported 3D models.
 
-- Integrated script editor.
-- Syntax highlighting.
-- Multiple script tabs.
-- Object-attached scripts.
-- Project-specific script files.
-- Immediate execution during playtesting.
-- Custom functions, variables, loops and conditions.
-- Runtime debugging console.
-- Transform and physics manipulation.
-- Keyboard and mouse input.
-- Programmable lighting and materials.
+| Feature | Status |
+|---|---|
+| GLB importing | Supported |
+| glTF importing | Supported |
+| Embedded textures | Supported |
+| External textures | Supported |
+| Base-color textures | Supported |
+| Metallic maps | Implemented |
+| Roughness maps | Implemented |
+| Multiple UV channels | Supported |
+| GPU texture caching | Supported |
+| Normal maps | Planned |
+| Emissive maps | Planned |
+| Texture mipmaps | Planned |
 
-Development-time scripting is powered by Rhai. Native Rust compilation for exported gameplay is a planned feature.
+Material textures are stored separately from scene data, allowing multiple objects to reuse imported resources.
 
-### Example
+Material appearance and lighting accuracy remain under active development.
 
-Create an object, attach a GXScript file and write:
+---
+
+## GXPhysics
+
+Powered by Rapier3D.
+
+- Dynamic rigid bodies
+- Static colliders
+- Gravity
+- Collision detection
+- Imported mesh colliders
+- Physics impulses
+- Velocity control
+- First-person player controllers
+- Script-controlled transforms
+
+---
+
+## GXUI
+
+A visual game interface development system integrated directly into GXEngine.
+
+Create main menus, HUDs, loading screens, inventories and custom interfaces.
+
+### Supported elements
+
+- Panels
+- Labels
+- Buttons
+- Progress bars
+- Checkboxes
+
+### Editor capabilities
+
+- Visual canvas
+- Drag and resize
+- Nine anchor presets
+- Reference resolution scaling
+- Custom colors and transparency
+- Adjustable font sizes
+- Rounded corners
+- Layer ordering
+- Element duplication and deletion
+- GXScript attachment
+
+GXUI supports standalone interface scenes and overlays within 3D gameplay.
+
+---
+
+## Scene Management
+
+Projects can contain multiple independent scenes.
+
+- Create 3D scenes
+- Create UI-only scenes
+- Open and switch between scenes
+- Save scenes independently
+- Automatically save before switching scenes
+- Load scenes during gameplay
+- Restore the original editor scene after playtesting
+
+A dedicated project startup scene setting is planned.
+
+---
+
+## GXScript
+
+GXScript is GXEngine's integrated gameplay scripting language.
+
+Write scripts directly inside the GXScripter editor and attach them to game objects or UI elements.
+
+The current development runtime is powered by Rhai. Native gameplay compilation is a future development goal.
+
+### 3D gameplay example
 
 ```js
 func start() {
-    print("Hello, GXEngine!");
+    print("Hello GXEngine!");
 }
 
 func update(dt) {
@@ -94,231 +174,263 @@ func update(dt) {
 }
 ```
 
-Press Play to execute the script directly inside the game.
+### UI scripting example
 
-No external code editor or native compilation is required for normal development-time scripting.
+```js
+func clicked() {
+    load_scene("Level1");
+}
+```
 
-### GXPhysics
+### Animated progress bar
 
-Powered by the Rapier physics engine.
+```js
+func update(dt) {
+    set_value(
+        sin(time()) * 0.5 + 0.5
+    );
+}
+```
 
-- Dynamic and static rigid bodies.
-- Collision detection.
-- Gravity simulation.
-- Physics impulses and velocity control.
-- Mesh colliders.
-- Configurable world gravity.
-- First-person and third-person player controllers.
-- Script-controlled physics interactions.
+### Interactive interface
 
-### GXEditor
+```js
+func clicked() {
+    ui_toggle("Inventory");
+}
+```
 
-An integrated native game development interface.
+### Dynamic lighting
 
-- Scene hierarchy.
-- Object inspector.
-- Transform gizmos.
-- Material controls.
-- Project asset browser.
-- Model importing.
-- Graphics settings.
-- Integrated scripting workspace.
-- Play and Stop controls.
-- Scene saving and loading.
-- Project launcher.
+```js
+func update(dt) {
+    var t = time();
 
-### GXStarter
+    set_light_color(
+        sin(t) * 0.5 + 0.5,
+        sin(t + 2.094) * 0.5 + 0.5,
+        sin(t + 4.188) * 0.5 + 0.5
+    );
 
-Built-in starter content to help developers create environments quickly.
+    set_light_energy(50.0);
+}
+```
 
-Includes primitive objects, platforms, walls, stairs, physics objects and material presets.
+### GXScripter editor
 
-### GXLighting
+- Syntax highlighting
+- Line numbers
+- Multiple script tabs
+- Script explorer
+- Syntax validation
+- Output console
+- Integrated playtesting
+- Persistent project scripts
 
-Programmable artificial lighting integrated into the cinematic renderer.
+UI and 3D scripts currently use separate runtime contexts. Shared gameplay state is planned.
 
-- Invisible point light entities.
-- Adjustable light intensity.
-- Adjustable light range.
-- Custom light colors.
-- Real-time illumination.
-- Script-controlled lighting.
-- Mesh and primitive shadow support.
+---
 
-## Supported assets
+## GXAsset
 
-| Asset | Format | Status |
-|---|---|---|
-| 3D models | GLB / glTF | Supported |
-| Scenes | .gxscene | Supported |
-| Gameplay scripts | .gxs | Supported |
-| Graphics configuration | JSON | Supported |
-| PBR texture maps | PNG / JPG | Planned |
-| Audio | WAV / OGG / MP3 | Planned |
+GXAsset introduces shared mesh resources to reduce unnecessary project storage and memory usage.
 
-## Project structure
+Instead of storing complete mesh geometry for every duplicated object, GXEngine can store geometry separately and reference the same asset.
 
-Every GXEngine project stores its own scenes, assets, scripts and graphics configuration.
+### Features
+
+- Shared mesh geometry using Rust reference counting
+- Deduplicated mesh asset files
+- Separate texture storage
+- Lightweight scene references
+- Independent object transforms
+- Shared geometry during scene backups
+- Compatibility with older inline mesh data
+
+Deleting a scene object does not automatically delete its underlying asset, as other objects or scenes may still depend on it.
+
+Binary compression, GPU instancing and unused asset cleanup are planned improvements.
+
+---
+
+## Project Structure
 
 ```text
 MyGame/
 ├── Assets/
-│   ├── Models/
-│   ├── Materials/
+│   ├── Meshes/
+│   │   └── model.gxmesh
 │   ├── Textures/
-│   ├── Audio/
+│   │   ├── diffuse.png
+│   │   └── material.png
 │   └── Scripts/
-│       └── player.gxs
+│       ├── player.gxs
+│       └── menu.gxs
 ├── Scenes/
-│   └── Main.gxscene
+│   ├── Main.gxscene
+│   ├── MainMenu.gxscene
+│   └── Level1.gxscene
 └── graphics.json
 ```
 
-Projects are designed to remain independent and portable.
+---
 
-## Getting started
+## Building from Source
 
-### Requirements
-
-- Windows computer.
-- Rust and Cargo.
-- A GPU and graphics driver compatible with WGPU.
-- Git.
-
-### Clone the repository
+Install Rust and Cargo before building GXEngine.
 
 ```bash
 git clone -b rust https://github.com/george5452/GXEngine.git
 cd GXEngine
-```
-
-### Build and launch
-
-```bash
 cargo run --release
 ```
 
-### Development build
+For development builds:
 
 ```bash
 cargo check
 cargo run
 ```
 
-The first compilation may take longer because Cargo needs to build the engine's dependencies.
+To build an optimized executable:
 
-## GXScript API
+```bash
+cargo build --release
+```
 
-| Function | Description |
-|---|---|
-| `start()` | Runs when gameplay starts |
-| `update(dt)` | Runs every frame |
-| `move(x, y, z)` | Moves the attached object |
-| `rotate(x, y, z)` | Rotates the attached object |
-| `set_position(x, y, z)` | Sets world position |
-| `set_rotation(x, y, z)` | Sets object rotation |
-| `set_scale(x, y, z)` | Changes visual scale |
-| `set_color(r, g, b)` | Changes material color |
-| `set_emission(value)` | Changes material emission |
-| `set_velocity(x, y, z)` | Sets physics velocity |
-| `add_impulse(x, y, z)` | Applies a physics impulse |
-| `set_light_energy(value)` | Changes light intensity |
-| `position()` | Returns object position |
-| `rotation()` | Returns object rotation |
-| `player_position()` | Returns player position |
-| `distance_to_player()` | Returns distance to player |
-| `key_down(key)` | Detects held input |
-| `key_pressed(key)` | Detects newly pressed input |
-| `time()` | Returns gameplay time |
-| `print(value)` | Writes to the debugging console |
+The executable will be located inside:
 
-The GXScript API is actively expanding as new engine systems are introduced.
+```text
+target/release/
+```
+
+---
 
 ## Technology
 
-| System | Technology |
+| Component | Technology |
 |---|---|
-| Core engine | Rust |
-| Graphics | WGPU |
-| Shaders | WGSL |
-| Editor UI | egui / eframe |
-| Physics | Rapier 3D |
+| Engine Core | Rust |
+| Graphics Backend | WGPU |
+| Shader Language | WGSL |
+| Editor Framework | egui / eframe |
+| Physics | Rapier3D |
 | Mathematics | glam |
+| Scripting Runtime | Rhai |
+| Model Importing | glTF |
 | Serialization | Serde |
-| Model importing | glTF |
-| Development scripting | Rhai |
+| Shared Assets | Rust Arc |
 
-## Development roadmap
+GXEngine's native version does not require Electron or a Chromium application runtime.
 
-### Current foundation
+---
+
+## Development Roadmap
+
+### Core Systems
 
 - [x] Native Rust engine
 - [x] Integrated scene editor
-- [x] Cinematic renderer
-- [x] Global illumination
-- [x] Physics simulation
-- [x] Model importing
-- [x] Mesh shadows
-- [x] Artificial lighting
 - [x] Project management
-- [x] GXScript editor
-- [x] Object-attached scripting
-- [x] Integrated script execution
-
-### Upcoming development
-
-- [ ] Advanced GXScript gameplay API
-- [ ] Script file management
-- [ ] Collision and trigger events
-- [ ] Raycasting
-- [ ] Runtime object spawning and destruction
-- [ ] PBR texture support
-- [ ] Shared mesh and asset resources
-- [ ] Renderer optimization
-- [ ] Animation system
-- [ ] Spatial audio
-- [ ] Game UI editor
+- [x] Independent scenes
+- [x] Runtime scene transitions
+- [x] Shared mesh asset foundation
+- [ ] Project settings
+- [ ] Configurable startup scene
 - [ ] Undo and redo
-- [ ] Automatic project recovery
+- [ ] Unused asset cleanup
+
+### Rendering
+
+- [x] Hybrid cinematic renderer
+- [x] Imported mesh rendering
+- [x] Point lights
+- [x] Base-color textures
+- [x] Metallic and roughness texture implementation
+- [ ] Normal mapping
+- [ ] Improved material accuracy
+- [ ] Texture mipmaps
+- [ ] GPU mesh instancing
+- [ ] Renderer optimization
+
+### Game Development
+
+- [x] GXScript
+- [x] Integrated script editor
+- [x] GXUI
+- [x] Scriptable UI
+- [ ] Shared gameplay state
+- [ ] Parent-child object hierarchy
+- [ ] Parent-child UI hierarchy
+- [ ] Audio system
+- [ ] Animation system
+- [ ] Input mapping
+- [ ] Runtime object spawning
+
+### GX2D
+
+- [ ] Dedicated 2D renderer
+- [ ] Sprite rendering
+- [ ] 2D cameras
+- [ ] Rapier2D physics
+- [ ] Sprite animation
+- [ ] Tilemaps
+- [ ] 2D lighting
+
+### Publishing
+
+- [ ] Standalone game exporting
 - [ ] Native GXScript compilation
-- [ ] Standalone game export
-- [ ] Mobile platform support
+- [ ] Windows installer
+- [ ] Additional platform support
 
-## Performance philosophy
+---
 
-GXEngine aims to balance graphical quality with efficient RAM and storage consumption.
+## Development Philosophy
 
-Future exported games are intended to include only the necessary runtime systems and game assets, without bundling the editor or development tools.
+GXEngine is being developed around four principles:
 
-Planned optimizations include shared mesh resources, compressed assets, GPU instancing, compilation caching and native gameplay compilation.
+**Freedom** — Give developers control over their games.
 
-## Repository branches
+**Accessibility** — Make game creation approachable without limiting advanced users.
+
+**Efficiency** — Avoid unnecessary resource usage and duplicated assets.
+
+**Quality** — Deliver powerful tools and visually compelling experiences.
+
+---
+
+## Development Status
+
+GXEngine is currently an experimental engine under active development.
+
+Features may change, project formats may evolve, and some systems require additional testing and optimization.
+
+Back up important projects before upgrading to newer development builds.
+
+Windows releases may initially be unsigned. Always obtain builds from official distribution sources.
+
+---
+
+## Repository Branches
 
 | Branch | Description |
 |---|---|
 | `rust` | Current native GXEngine development |
-| `main` | Original Electron-based GXEngine |
+| `main` | Legacy Electron implementation |
 
-The Rust branch is the primary focus of development.
-
-## Development status
-
-GXEngine is currently in early development.
-
-Features, APIs and project formats may change as development progresses. Some systems are experimental, and production-ready game exporting is not yet available.
-
-Back up important projects before updating the engine.
-
-## Licensing
-
-Third-party dependencies are subject to their respective licenses. Refer to the repository's license information for GXEngine's own usage and distribution terms.
+---
 
 ## Developer
 
-Developed by **GXGroup**.
+**GeorgeBeeTaong**
 
-GitHub: https://github.com/george5452/GXEngine
+Independent game and software developer.
+
+GXEngine is developed with AI-assisted programming, manual integration, architectural development, debugging and testing.
 
 ---
 
 **GXEngine — Create something extraordinary.**
+
+Developed by GeorgeBeeTaong.
