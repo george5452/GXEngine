@@ -28,8 +28,8 @@ mod mesh_light;
 #[path = "lighting.rs"]
 mod lighting;
 
-#[path = "blueprint.rs"]
-mod blueprint;
+#[path = "scripting.rs"]
+mod scripting;
 
 use bytemuck::{Pod, Zeroable};
 use eframe::{egui, egui_wgpu};
@@ -71,9 +71,6 @@ struct Object {
     light: lighting::Light,
 
     #[serde(default)]
-    blueprint: blueprint::Blueprint,
-
-    #[serde(default)]
     meshes: Vec<mesh::MeshData>,
 
     #[serde(default)]
@@ -90,6 +87,9 @@ struct Object {
 
     #[serde(default = "default_camera_distance")]
     camera_distance: f32,
+
+    #[serde(default)]
+    script: String,
 }
 
 fn default_walk_speed() -> f32 {
@@ -108,9 +108,9 @@ fn default_camera_distance() -> f32 {
 impl Object {
     fn new(shape: Shape) -> Self {
         Self {
+            script: String::new(),
             light_only: false,
             light: lighting::Light::default(),
-            blueprint: blueprint::Blueprint::default(),
             name: format!("{:?}", shape),
             shape,
             position: [0.0, 1.5, 0.0],
@@ -388,7 +388,7 @@ fn initialize_gpu(cc: &eframe::CreationContext<'_>) {
 }
 
 struct GXEngine {
-    blueprint_runtime: blueprint::BlueprintRuntime,
+    scripter: scripting::GXScripter,
     scene: Scene,
     backup: Option<Scene>,
     physics_world: Option<physics::GXPhysics>,
@@ -425,7 +425,7 @@ impl GXEngine {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
         Self {
-            blueprint_runtime: blueprint::BlueprintRuntime::default(),
+            scripter: scripting::GXScripter::default(),
             scene: Scene::default(),
             backup: None,
             physics_world: None,
@@ -471,6 +471,11 @@ impl GXEngine {
     }
 
     fn play(&mut self) {
+        if let Err(error) = self.scripter.save_pending(&self.project_dir) {
+            self.status = format!("Cannot start game: {}", error);
+
+            return;
+        }
         self.backup = Some(self.scene.clone());
         self.editor_camera = self.camera;
         self.editor_yaw = self.yaw;
@@ -643,6 +648,21 @@ impl GXEngine {
             world.update(&mut self.scene, dt);
         }
     }
+
+    fn save_project(&mut self) {
+        if self.playing || self.launcher_open {
+            return;
+        }
+
+        if let Err(error) = self.scripter.save_pending(&self.project_dir) {
+            self.status = format!("Script save failed: {}", error);
+
+            return;
+        }
+
+        self.save();
+        self.save_graphics_settings();
+    }
 }
 
 fn vector_editor(ui: &mut egui::Ui, name: &str, value: &mut [f32; 3]) {
@@ -666,8 +686,7 @@ impl eframe::App for GXEngine {
                 self.stop();
             }
 
-            self.save();
-            self.save_graphics_settings();
+            self.save_project();
         }
     }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -681,7 +700,7 @@ impl eframe::App for GXEngine {
 
         self.physics(dt);
         self.player_update(ctx);
-        self.blueprint_update(ctx, dt);
+        self.scripting_update(ctx, dt);
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -696,8 +715,8 @@ impl eframe::App for GXEngine {
                     self.selected = None;
                 }
 
-                if ui.button("Save").clicked() && !self.playing {
-                    self.save();
+                if ui.button("Save Project").clicked() && !self.playing {
+                    self.save_project();
                 }
 
                 if ui.button("Open").clicked() && !self.playing {
@@ -705,13 +724,12 @@ impl eframe::App for GXEngine {
                 }
 
                 if ui.button("Projects").clicked() && !self.playing {
-                    self.save();
-                    self.save_graphics_settings();
+                    self.save_project();
                     self.launcher_open = true;
                 }
 
-                if ui.button("Blueprint").clicked() {
-                    self.blueprint_runtime.open = true;
+                if ui.button("Scripter").clicked() && !self.playing {
+                    self.scripter.open = true;
                 }
 
                 ui.text_edit_singleline(&mut self.path);
@@ -818,6 +836,12 @@ impl eframe::App for GXEngine {
             .show(ctx, |ui| {
                 ui.heading("Inspector");
                 ui.separator();
+
+                if let Some(index) = self.selected {
+                    if index < self.scene.objects.len() {
+                        self.script_inspector(ui, index);
+                    }
+                }
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     if self.environment_selected {
@@ -1045,7 +1069,7 @@ impl eframe::App for GXEngine {
             );
         });
 
-        self.blueprint_window(ctx);
+        self.scripting_window(ctx);
         ctx.request_repaint();
     }
 }

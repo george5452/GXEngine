@@ -5,3 +5,8 @@ target/
 *.pdb
 .env
 projects/
+/target/
+/target/
+/gxs-build/
+/gxc.exe
+**/.gxs-cache/

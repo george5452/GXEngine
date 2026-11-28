@@ -75,7 +75,7 @@ impl GXEngine {
         self.playing = false;
         self.launcher_open = false;
 
-        self.status = "Project created".into();
+        self.save_graphics_settings();
 
         Ok(())
     }
@@ -93,6 +93,7 @@ impl GXEngine {
 
                 self.scene = scene;
                 self.path = scene_path.to_string_lossy().into_owned();
+                self.scripter = scripting::GXScripter::default();
 
                 self.project_dir = path.clone();
                 self.browser_dir = path;
@@ -102,7 +103,11 @@ impl GXEngine {
                 self.playing = false;
                 self.launcher_open = false;
 
-                self.status = "Project opened".into();
+                if self.project_dir.join("graphics.json").exists() {
+                    self.load_graphics_settings();
+                } else {
+                    self.status = "Project opened".into();
+                }
             }
 
             Err(error) => {
